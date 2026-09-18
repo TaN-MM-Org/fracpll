@@ -1,6 +1,6 @@
 # fracpll
 
-[![PyPI](https://img.shields.io/pypi/v/fracpll.svg)](https://pypi.org/project/fracpll/) [![tests](https://github.com/TaN-MM-Org/fracpll/actions/workflows/ci.yml/badge.svg)](https://github.com/TaN-MM-Org/fracpll/actions)
+[![PyPI](https://img.shields.io/pypi/v/fracpll.svg)](https://pypi.org/project/fracpll/) [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22829473-blue)](https://doi.org/10.5281/zenodo.22829473) [![tests](https://github.com/TaN-MM-Org/fracpll/actions/workflows/ci.yml/badge.svg)](https://github.com/TaN-MM-Org/fracpll/actions)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 Designing a charge-pump fractional-N synthesizer means answering the
@@ -182,4 +182,6 @@ notes.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. Every release is archived on Zenodo under the concept DOI
+[10.5281/zenodo.22829473](https://doi.org/10.5281/zenodo.22829473),
+which always resolves to the latest version.
