@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If this software is useful in your work, please cite it."
+title: "fracpll: charge-pump fractional-N PLL design from measured pieces"
+authors:
+  - family-names: Mahim
+    given-names: Tanvir M.
+    orcid: "https://orcid.org/0000-0002-4550-3248"
+version: 0.1.0
+date-released: 2026-09-18
+license: Apache-2.0
+repository-code: "https://github.com/TaN-MM-Org/fracpll"
