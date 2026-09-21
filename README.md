@@ -130,6 +130,16 @@ zf = lambda w: loop_filter_impedance(w, 100e-12, [(4.7e3, 1.5e-9)])
 lg = open_loop(2 * np.pi * lines["f_hz"], 100e-6, 20e6, 40.0, zf)
 spurs = closed_loop_lines(lines["f_hz"], lines["line_rad2"], lg)
 print(lines["f_hz"][:3], spurs["sideband_dbc"][:3])
+
+# Fractional-N noise including the second-order pulse-width effect,
+# per cycle, without the edge-level simulator (new in 0.3):
+from fracpll import simulate_sampled
+fast = simulate_sampled(icp=100e-6, kvco_hz_per_v=20e6,
+                        n_div=40 + 104857 / 2**20, f_ref_hz=50e6,
+                        c_shunt=100e-12, branches=[(4.7e3, 1.5e-9)],
+                        n_int=40, num=104857, den=2**20, mash_order=3,
+                        n_cycles=1 << 15, order=2)
+print(fast["psi"].std(), "cycles rms excess phase")
 ```
 
 ## What is inside
@@ -183,6 +193,14 @@ print(lines["f_hz"][:3], spurs["sideband_dbc"][:3])
   exact linearised one-period map of the charge-pump loop for any
   passive filter and any bandwidth (the impulse-invariant model of
   Gardner 1980, built numerically), with its poles.
+- **`simulate_sampled` / `pulse_doublet_vector`** (new in 0.3): a fast
+  per-cycle loop, exact to first order (`order=1`) or including every
+  second-order effect of the finite PFD pulse (`order=2`): the charge
+  centroid tau/2 from the reference edge, and the divider firing at the
+  oscillator's actual phase. With a delta-sigma divider, order 2
+  reproduces the in-band noise of the edge-level simulator that the
+  linear map misses (residual 60 dB or more below the effect), about
+  five times faster.
 - **`pfd_static_offset`** (new in 0.2): the exact steady-state
   offset of a tri-state PFD from charge balance, with mismatch,
   reset delay and dead zone, and refusals where no operating point
@@ -202,7 +220,7 @@ where one exists, the remedy.
 
 ## How it is checked
 
-50 tests (Python 3.9-3.14, run in CI on every push), every claim
+57 tests (Python 3.9-3.14, run in CI on every push), every claim
 pinned to a closed form, an exact identity, published guidance, or
 two independent code paths -- never a stored number. Highlights: the
 general filter impedance equals the textbook second-order closed form
@@ -230,7 +248,12 @@ ratio N + num/den; it pulls in through cycle slips; and its delta-sigma
 phase noise matches |L/(1+L)|^2 S_dsm in the linear band, as does the
 exact linear sampled map driven by the same integer sequence in every
 band; and the first-order spurs it produces at the output equal the
-exact MASH-1 lines through the closed loop to within 0.5 dB.
+exact MASH-1 lines through the closed loop to within 0.5 dB. The
+second-order map reproduces the edge-level run: per-cycle pulse widths
+to 1e-15 s, time-domain residual more than 1000 times below the linear
+map's, every in-band level within 0.5 dB, at two shunt capacitances and
+for negative Kvco. The pulse-width effect halves (-6 dB) when the
+pulses are made half as wide at the same loop.
 
 ## A correction in 0.2.0
 
@@ -259,9 +282,11 @@ delta-sigma PSD is a continuum model: for short periods the exact line
 spectrum can differ from it by tens of percent at low offsets, and
 `mash_line_spectrum` shows by how much. With a delta-sigma divider the
 edge-level run shows an extra in-band floor, even with matched pumps,
-that no linear model contains. It is verified to be behaviour of the
-model rather than numerics, but its mechanism is not identified here
-and nothing is claimed about it. No device physics, no transistor
+that no linear model contains. Version 0.3 explains it and computes
+it: it is the second-order effect of the finite PFD pulse (the charge
+centroid sits tau/2 from the reference edge, and tau fluctuates with
+the delta-sigma phase), reproduced cycle by cycle by
+`simulate_sampled(order=2)`. No device physics, no transistor
 models and no PDK data ship with this package: the source study's
 foundry PDK files are licensed material and are not redistributed.
 Your measured tuning curves and noise points carry the technology, each

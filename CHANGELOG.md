@@ -5,6 +5,46 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## v0.3.0 - 2026-09-21
+
+The in-band effect that 0.2.0 reported without a mechanism is now
+explained, computed and tested.
+
+### Explained
+- With a delta-sigma divider, the edge-level loop carries in-band noise
+  that the exact linear sampled map misses, even with matched pumps.
+  It is the second-order effect of the finite PFD pulse. A pulse is a
+  rectangle of charge q = pol Icp tau whose centroid sits tau/2 from
+  the reference edge. To second order that adds
+  -(pol Icp tau^2/2) M B to the loop state. Because the delta-sigma
+  divider makes tau fluctuate, tau^2 folds shaped noise into the band.
+- The in-pulse ramp (Kvco Icp tau^2/(2 C_shunt)) and the filter's
+  charge redistribution nearly cancel. The lasting part is
+  Kvco Icp tau^2/(2 C_total), which is why the effect does not depend
+  on C_shunt.
+- How it was found: no fitted parameters. The two halves of the pulse
+  correction are each 20 dB off alone and correct together. The
+  second-order divider-timing terms are negligible.
+- 0.2.0's docs described the effect as a flat in-band floor. With finer
+  spectral resolution it peaks around the loop bandwidth and falls away
+  on both sides. The flat appearance came from coarse Welch bins.
+
+### Added
+- `sampled.simulate_sampled(order=1|2)`: a fast per-cycle loop. Order 2
+  includes every second-order pulse-width effect and is computed
+  self-consistently.
+- `sampled.pulse_doublet_vector`.
+
+### Anchors (7 new tests, 57 total)
+- Order 2 vs the edge-level simulator: per-cycle tau to 1e-15 s,
+  residual more than 1000x below the linear map's, and in-band levels
+  within 0.5 dB, at C_shunt 100 and 400 pF and with negative Kvco.
+- Order 1 equals the linear sampled map exactly.
+- The doublet's oscillator row equals Kvco/C_shunt at t = 0+ and
+  Kvco/C_total at long times.
+- The effect drops about 6 dB when the pulse width halves at the same
+  loop, in both the edge-level run and the order-2 map.
+
 ## v0.2.0 - 2026-09-21
 
 Beyond the averaged model, and one correction.
