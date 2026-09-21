@@ -51,7 +51,7 @@ def test_psd_formula_matches_exact_sequence(m):
 
 
 def test_first_order_spur_refusal():
-    with pytest.raises(ValueError, match="spurs"):
+    with pytest.raises(ValueError, match="spur"):
         dsm_phase_psd(np.array([0.1]), 1.0, 1)
     with pytest.raises(ValueError, match="Nyquist"):
         dsm_phase_psd(np.array([0.6]), 1.0, 2)
@@ -87,6 +87,10 @@ def test_synthesizer_assembly_identity():
     assert np.allclose(out["s_out"],
                        hl2 * 40.0 ** 2 * dbc_to_psd(-100.0),
                        rtol=1e-12)
+    # the delta-sigma path is oscillator-referred: |L/(1+L)|^2, no N^2
+    sd = dsm_phase_psd(f, 50e6, 3)
+    out2 = synthesizer_psd(f, lg, 40.0, s_dsm=sd)
+    assert np.allclose(out2["s_dsm_closed"], hl2 * sd, rtol=1e-12)
 
 
 def test_noisespec_refusals():
