@@ -41,18 +41,21 @@ the delta-sigma noise formula of `fracpll.mash` through the loop, and
 the exact mean division ratio of a fractional-N lock.
 
 What it shows that the linear models cannot: with a delta-sigma
-divider, the edge-level loop carries an extra in-band noise floor at
-offsets below a few times the loop bandwidth, even with perfectly
-matched pumps.  It is circuit behaviour of this model, not numerics:
-it is unchanged (to 0.001 dB) when the time resolution is improved
-10^5-fold, independent of the Welch window, and it falls about
-5.5 dB per halving of the PFD pulse width while the linear band
-stays fixed (asserted in the tests).  Single-pulse runs show the
-edge-level map has second-order terms of size ~Kvco Icp e^2/(2 C0)
-whose coefficient depends on which edge leads, i.e. the PFD/pump/
-oscillator sampling is weakly nonlinear even when matched; the floor
-itself, however, does not scale with C0, so the precise mechanism is
-NOT identified here and no claim is made about it.  With pump
+divider, the edge-level loop carries extra in-band noise, peaking
+around the loop bandwidth, even with perfectly matched pumps.  It is
+the SECOND-ORDER effect of the finite PFD pulse: each pulse is a
+rectangle of charge whose centroid sits tau/2 from the reference edge,
+not an impulse at it, and since the delta-sigma divider makes tau
+fluctuate, the resulting tau^2 terms fold shaped quantization noise
+into the band.  `fracpll.sampled.simulate_sampled(order=2)` computes
+these terms self-consistently and reproduces this simulator cycle by
+cycle -- per-cycle pulse widths to 1e-15 s and the residual 60 dB or
+more below the effect, for shunt capacitances 100 and 400 pF and for
+negative Kvco (tests/test_second_order.py).  The in-pulse control-
+voltage ramp (Kvco Icp tau^2/(2 C_shunt)) and the filter's charge
+redistribution nearly cancel; the LASTING part is
+Kvco Icp tau^2/(2 C_total), which is why the effect does not depend
+on C_shunt.  With pump
 MISMATCH the simulator reproduces the well-documented folding of
 shaped quantization noise into the band and its reduction by an
 offset current (T.-H. Lin, C.-L. Ti and Y.-H. Liu, IEEE Trans.
