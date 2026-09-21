@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fracpll"
-version = "0.1.0"
+version = "0.2.0"
 description = "Charge-pump fractional-N PLL design from measured pieces - loop stability, MASH quantization noise, closed-loop phase noise, measured tuning curves, nonlinear lock transients and measurement planning, with validity refusals"
 readme = "README.md"
 requires-python = ">=3.9"
