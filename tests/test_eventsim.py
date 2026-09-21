@@ -99,10 +99,10 @@ def test_delta_sigma_noise_through_the_loop_has_no_n_squared():
     simulator, the exact linear sampled-data map driven by the SAME
     integer MASH sequence, and the continuous formula |L/(1+L)|^2 S_dsm.
     In the linear band all three agree -- and the 0.1.0 assembly with
-    N^2 does not.  (At offsets below a few times the loop bandwidth the
-    edge-level run shows an additional, pulse-width-dependent floor that
-    neither linear model contains; see the eventsim docstring.  It is
-    reported, not asserted, here.)"""
+    N^2 does not.  (Near the loop bandwidth and below, the edge-level
+    run also carries the second-order pulse-width effect that neither
+    linear model contains; tests/test_second_order.py explains and
+    reproduces it with `simulate_sampled(order=2)`.)"""
     from fracpll import mash_sequence
     from fracpll._network import FilterModes
     fr, n, kv, icp = 50e6, 40, 20e6, 100e-6
@@ -156,7 +156,8 @@ def test_delta_sigma_noise_through_the_loop_has_no_n_squared():
 
 
 def test_edge_level_floor_is_converged_not_numerical():
-    """The low-offset excess of the edge-level run shrinks with the
+    """The low-offset excess of the edge-level run (the second-order
+    pulse-width effect of tests/test_second_order.py) shrinks with the
     PFD pulse width (N and Kvco scaled together keep the linear loop
     identical in cycle units, so the linear band must not move while a
     pulse-width effect must) -- the signature of circuit behaviour of
