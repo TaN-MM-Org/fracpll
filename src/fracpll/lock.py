@@ -26,12 +26,18 @@ reducing to phi_ss ~ 2 pi (I_leak/Icp - mismatch) in the linear range
 it and refuses when |I_leak/Icp - mismatch| >= 1: the pump then cannot
 cancel the disturbance at any phase, and no lock point exists.  The
 transient is held against this closed form in the tests (two code
-paths), and against a frequency-domain synthesis of the linearized
-step response (two independent numerical routes to one trajectory).
+paths: the integrated trajectory and the closed-form offset).
+
+The tanh characteristic is the smooth averaged surrogate used in the
+source study; a real tri-state PFD is LINEAR in the phase error over
+(-2 pi, 2 pi) and is resolved edge by edge in `fracpll.eventsim`.  Its
+exact static offset (with mismatch, reset delay and dead zone) is
+`fracpll.pfd.pfd_static_offset`; the two agree to first order in
+I_leak/Icp, which the tests check.
 
 Honest limits: this is the AVERAGED model -- per-edge behavior (dead
-zone, cycle-slip granularity, reset overlap) is below its resolution,
-and it says nothing about a loop whose crossover violates the
+zone, cycle-slip granularity, reset overlap) is below its resolution
+(use `fracpll.eventsim` for it), and it says nothing about a loop whose crossover violates the
 `fracpll.loop.stability` validity refusal.
 """
 from __future__ import annotations

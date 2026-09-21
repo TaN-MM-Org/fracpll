@@ -5,11 +5,16 @@ loop transfers, exactly as in the GaN-on-SOI co-design study this
 package is distilled from:
 
     S_out(f) = |1/(1+L)|^2 S_vco(f)
-             + |L/(1+L)|^2 N^2 ( S_inband(f) + S_dsm(f) ),
+             + |L/(1+L)|^2 ( N^2 S_inband(f) + S_dsm(f) ),
 
 with S_vco the open-loop oscillator noise, S_inband the in-band
-reference/PFD/CP floor referred to the divider input (hence the N^2),
-and S_dsm the MASH quantization noise of `fracpll.mash`.  All PSDs in
+reference/PFD/CP floor referred to the phase-detector input (hence the
+N^2), and S_dsm the MASH quantization noise of `fracpll.mash`, which is
+ALREADY oscillator-referred (a divider count error is an oscillator
+cycle) and so carries no N^2.  fracpll 0.1.0 multiplied S_dsm by N^2
+as well -- a bug, found by the edge-level simulator of
+`fracpll.eventsim`, whose measured fractional-N phase noise matches
+this assembly and not the old one; the tests hold that comparison.  All PSDs in
 this package are ONE-SIDED, in rad^2/Hz, and RMS jitter is
 
     sigma_t = sqrt( integral S_out df ) / (2 pi f0)      [seconds]
@@ -32,7 +37,7 @@ import numpy as np
 from .loop import error_transfer, lowpass_transfer
 
 __all__ = ["NoiseSpec", "white_floor", "synthesizer_psd", "rms_jitter",
-           "dbc_to_psd", "psd_to_dbc"]
+           "dbc_to_psd", "psd_to_dbc", "closed_loop_lines"]
 
 
 def dbc_to_psd(dbc_per_hz):
@@ -124,10 +129,11 @@ def synthesizer_psd(f_hz, lg, n_div, s_vco=None, s_inband=None,
 
     f_hz : offset grid (Hz).
     lg : open-loop gain L(j 2 pi f) on that grid (`fracpll.loop`).
-    n_div : mean division ratio (multiplies the input-referred paths
-        by N^2).
-    s_vco, s_inband, s_dsm : one-sided rad^2/Hz arrays on the grid
-        (None = that path absent).
+    n_div : mean division ratio (multiplies the PFD-referred in-band
+        floor by N^2; NOT applied to s_dsm).
+    s_vco : open-loop oscillator PSD; s_inband : PFD-referred floor;
+    s_dsm : oscillator-referred delta-sigma PSD, e.g. `dsm_phase_psd`.
+        One-sided rad^2/Hz arrays on the grid (None = path absent).
 
     Returns dict(s_out, s_vco_closed, s_inband_closed, s_dsm_closed).
     """
@@ -149,7 +155,7 @@ def synthesizer_psd(f_hz, lg, n_div, s_vco=None, s_inband=None,
                              "same grid as f")
     out = {"s_vco_closed": he2 * v,
            "s_inband_closed": hl2 * n2 * ib,
-           "s_dsm_closed": hl2 * n2 * dq}
+           "s_dsm_closed": hl2 * dq}
     out["s_out"] = (out["s_vco_closed"] + out["s_inband_closed"]
                     + out["s_dsm_closed"])
     return out
@@ -173,3 +179,25 @@ def rms_jitter(f_hz, s_out, f0_hz):
         raise ValueError("f0_hz must be finite and positive")
     var = np.trapezoid(s, f)
     return float(np.sqrt(var) / (2.0 * np.pi * f0))
+
+
+def closed_loop_lines(f_hz, line_rad2, lg):
+    """Divider spur lines at the synthesizer output.
+
+    f_hz, line_rad2 : line frequencies and one-sided powers from
+        `fracpll.mash.mash_line_spectrum` (oscillator-referred).
+    lg : open-loop gain L(j 2 pi f) evaluated AT those frequencies.
+
+    Returns dict(line_rad2, sideband_dbc): each line times
+    |L/(1+L)|^2, and its single-sideband level in dBc where the
+    small-angle approximation holds (NaN elsewhere; see
+    `fracpll.mash.mash_line_spectrum`).
+    """
+    f = np.atleast_1d(np.asarray(f_hz, dtype=float))
+    p = np.atleast_1d(np.asarray(line_rad2, dtype=float))
+    lg = np.asarray(lg, dtype=complex)
+    if f.shape != p.shape or lg.shape != f.shape:
+        raise ValueError("f_hz, line_rad2 and lg must share one grid")
+    from .mash import _small_angle_dbc
+    out = np.abs(lowpass_transfer(lg)) ** 2 * p
+    return {"line_rad2": out, "sideband_dbc": _small_angle_dbc(out)}

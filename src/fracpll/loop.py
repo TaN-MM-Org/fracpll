@@ -19,7 +19,10 @@ classical guidance, going back to the discrete-time analysis of
 F. M. Gardner, "Charge-pump phase-lock loops", IEEE Trans. Commun. 28,
 1849 (1980), is to keep the loop bandwidth about a decade below the
 reference; this module refuses beyond f_ref/10 rather than silently
-reporting numbers its own model no longer supports.
+reporting numbers its own model no longer supports, and points to
+`fracpll.sampled`, whose exact sampled-data map answers the stability
+question at ANY bandwidth, and to `fracpll.eventsim` for the loop edge
+by edge.
 """
 from __future__ import annotations
 
@@ -129,7 +132,9 @@ def stability(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz,
             f"{f_ref / 10.0:.4g} Hz: the averaged continuous-time "
             "model is no longer trustworthy this close to the "
             "reference (Gardner, IEEE Trans. Commun. 28, 1849 (1980)); "
-            "this package refuses rather than reporting numbers "
-            "outside its own validity")
+            "this averaged model refuses here. Use "
+            "fracpll.sampled_stability for the exact sampled-data "
+            "answer at any bandwidth, or fracpll.simulate_pll for the "
+            "edge-level loop")
     return {"f_crossover_hz": float(fc),
             "phase_margin_deg": float(pm)}
