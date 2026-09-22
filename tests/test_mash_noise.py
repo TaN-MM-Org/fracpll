@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 from scipy import signal
 
-from fracpll import (NoiseSpec, MASH_RANGE, dbc_to_psd, dsm_phase_psd,
+from fracpll import (NoiseSpec, MASH_RANGE, dbc_to_psd, psd_to_dbc,
+                     dsm_phase_psd, closed_loop_lines, mash_line_spectrum,
                      mash_sequence, rms_jitter, synthesizer_psd,
                      white_floor, open_loop, loop_filter_impedance)
 
@@ -103,3 +104,30 @@ def test_noisespec_refusals():
     # log-log interpolation hits the endpoints exactly
     assert np.allclose(spec.psd(1e3), dbc_to_psd(-90.0))
     assert np.allclose(spec.psd(1e6), dbc_to_psd(-120.0))
+
+
+def test_dbc_convention_is_one_convention():
+    """dBc/Hz is L(f) = S_phi(f)/2 (IEEE Std 1139) everywhere: the
+    printed form of the MASH noise in W. Rhee's thesis, eq. (3.7),
+    L(f) = (2 pi)^2/(12 f_ref) (2 sin(pi f/f_ref))^(2(m-1)), is what
+    psd_to_dbc gives for dsm_phase_psd; the conversions invert each
+    other; and the dBc of discrete lines uses the same factor."""
+    fr = 50e6
+    f = np.geomspace(1e4, 2e7, 50)
+    for m in (2, 3):
+        rhee = (2 * np.pi) ** 2 / (12 * fr) \
+            * (2 * np.sin(np.pi * f / fr)) ** (2 * (m - 1))
+        assert np.allclose(psd_to_dbc(dsm_phase_psd(f, fr, m)),
+                           10 * np.log10(rhee), rtol=0, atol=1e-10)
+    x = np.array([-150.0, -100.0, -60.0])
+    assert np.allclose(psd_to_dbc(dbc_to_psd(x)), x, rtol=0, atol=1e-12)
+    assert np.allclose(dbc_to_psd(-100.0), 2e-10, rtol=1e-12)
+    zf = lambda w: loop_filter_impedance(w, 100e-12, [(4.7e3, 1.5e-9)])
+    r = mash_line_spectrum(3, 64, 1, fr)
+    lg = open_loop(2 * np.pi * r["f_hz"], 100e-6, 20e6, 40.0, zf)
+    out = closed_loop_lines(r["f_hz"], r["line_rad2"], lg)
+    ok = np.isfinite(out["sideband_dbc"])
+    assert ok.any()
+    assert np.allclose(out["sideband_dbc"][ok],
+                       psd_to_dbc(out["line_rad2"][ok]), rtol=0,
+                       atol=1e-12)

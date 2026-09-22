@@ -94,6 +94,22 @@ def test_exact_stability_boundary_where_averaged_model_refuses():
             stability(f * icrit, kv, n, zf, f_ref_hz=fr)
 
 
+def test_sampled_poles_reduce_to_averaged_poles_at_low_bandwidth():
+    """For a loop far below the reference (crossover ~ f_ref/1250) the
+    exact one-period map has the poles z = exp(s T) of the averaged
+    model's closed-loop poles s -- two independent computations (a
+    matrix exponential vs the roots of 1 + L(s) = 0)."""
+    from fracpll import continuous_closed_loop_poles
+    fr = 50e6
+    kw = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0,
+              c_shunt=100e-12, branches=[(4.7e3, 1.5e-9)])
+    z = np.sort_complex(sampled_stability(f_ref_hz=fr, **kw)["poles"])
+    zc = np.sort_complex(np.exp(continuous_closed_loop_poles(**kw) / fr))
+    assert z.size == zc.size == 3
+    # measured from z = 1, where the poles cluster at low bandwidth
+    assert np.all(np.abs(z - zc) < 1e-3 * np.abs(1.0 - zc))
+
+
 def test_delta_sigma_noise_through_the_loop_has_no_n_squared():
     """Three routes to the closed-loop delta-sigma noise: the edge-level
     simulator, the exact linear sampled-data map driven by the SAME

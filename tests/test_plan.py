@@ -8,6 +8,9 @@ import pytest
 
 from fracpll import averages_for_jitter, jitter_relative_sigma
 
+# np.trapezoid is NumPy >= 2.0; np.trapz is the same rule before that.
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 
 def _grid():
     f = np.geomspace(1e3, 1e7, 400)
@@ -25,7 +28,7 @@ def test_closed_form_vs_seeded_monte_carlo():
     draws = rng.exponential(1.0, size=(trials, n_avg, f.size))
     s_hat = s[None, :] * draws.mean(axis=1)
     # trapezoid-integrate each trial, propagate to J = sqrt(var)
-    var = np.trapezoid(s_hat, f, axis=1)
+    var = _trapezoid(s_hat, f, axis=1)
     j = np.sqrt(var)
     emp = j.std(ddof=1) / j.mean()
     # exponential bins have unit relative variance -> matches the
@@ -61,7 +64,7 @@ def test_refusals():
 
 def test_metadata():
     import fracpll
-    assert fracpll.__version__ == "0.3.0"
+    assert fracpll.__version__ == "0.3.1"
     assert len(fracpll.__all__) == len(set(fracpll.__all__))
     for name in fracpll.__all__:
         assert hasattr(fracpll, name)

@@ -8,8 +8,9 @@ out-of-range lock target is refused rather than integrated forever."""
 import numpy as np
 import pytest
 
-from fracpll import (TuningFamily, fit_tuning, lock_transient,
-                     static_offset)
+from fracpll import (TuningFamily, continuous_closed_loop_poles,
+                     fit_tuning, loop_filter_impedance, lock_transient,
+                     open_loop, stability, static_offset)
 
 REF = "VNA + SMU sweep, lab notebook 2026-09-18"
 
@@ -113,11 +114,13 @@ def test_lock_transient_reaches_closed_form_offset():
     # route 1: the integrated trajectory's final phase
     # route 2: the closed form
     phi_ss = static_offset(200e-6, i_leak=i_leak)
-    assert abs(res["phi_e"][-1] - phi_ss) < 0.05
+    # (phi_ss = 0.0628 rad here, so the bound must be far tighter than
+    # the 0.05 rad settling band to tell the offset from zero)
+    assert abs(res["phi_e"][-1] - phi_ss) < 1e-6
     assert np.isclose(res["phi_static"], phi_ss)
     # and the final control voltage puts the oscillator on target
     f_end = float(np.ravel(curve.frequency(res["vc"][-1]))[0])
-    assert abs(f_end / (n_div * f_ref) - 1.0) < 1e-3
+    assert abs(f_end / (n_div * f_ref) - 1.0) < 1e-9
     assert res["t_settle"] is not None and res["t_settle"] > 0.0
 
 
@@ -133,3 +136,21 @@ def test_zero_resistance_branch_refused():
     with pytest.raises(ValueError, match="lump"):
         lock_transient(curve, n_div, f_ref, icp=200e-6,
                        c_shunt=50e-12, branches=[(0.0, 1e-9)])
+
+
+def test_negative_kvco_refused_by_the_averaged_models():
+    """The averaged models take the |Kvco| the loop sees; a negative
+    value would silently mean positive feedback (L < 0 at DC), so it is
+    refused.  The averaged lock model refuses a falling tuning curve
+    and points to the edge-level simulator."""
+    zf = lambda w: loop_filter_impedance(w, 100e-12, [(4.7e3, 1.5e-9)])
+    with pytest.raises(ValueError, match="magnitude"):
+        open_loop(np.array([1e5]), 100e-6, -20e6, 40.0, zf)
+    with pytest.raises(ValueError, match="magnitude"):
+        stability(100e-6, -20e6, 40.0, zf, f_ref_hz=50e6)
+    with pytest.raises(ValueError, match="magnitude"):
+        continuous_closed_loop_poles(100e-6, -20e6, 40.0, 100e-12,
+                                     [(4.7e3, 1.5e-9)])
+    with pytest.raises(ValueError, match="pump_polarity=-1"):
+        lock_transient(_curve(), 95.0, 50e6, icp=200e-6, c_shunt=50e-12,
+                       branches=[(4.7e3, 1.5e-9)])
