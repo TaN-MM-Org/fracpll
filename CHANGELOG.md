@@ -5,6 +5,59 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## v0.3.1 - 2026-09-22
+
+Three code fixes found in a review of 0.3.0, two corrections to
+earlier notes, one missing test added, and a plain-language README.
+
+### Fixed
+- `dbc_to_psd` / `psd_to_dbc` used S_phi = 10^(L/10). The standard
+  definition is L(f) = S_phi(f)/2 (IEEE Std 1139), and the rest of the
+  package already used it: `dsm_phase_psd` (W. Rhee's eq. 3.7 is
+  printed as L(f)) and the dBc of `mash_line_spectrum` /
+  `closed_loop_lines`. Measured oscillator noise and `white_floor`
+  floors were therefore 3 dB low next to the delta-sigma term, and
+  jitter from them too small by sqrt(2) (the README example: 7.65 ps
+  before, 10.82 ps after). Now S_phi = 2 x 10^(L/10). Re-run any
+  result that converted measured dBc/Hz with 0.3.0 or earlier.
+- `open_loop`, `stability` and `continuous_closed_loop_poles` accepted
+  a negative Kvco and returned results for a positive-feedback loop
+  (e.g. a 234 degree "phase margin"). They now refuse it: pass |Kvco|,
+  which is what a loop with a reversed pump sees. `lock_transient`
+  returned an unlocked run for a falling (negative-Kvco) tuning curve;
+  it now refuses and points to `simulate_pll(..., pump_polarity=-1)`.
+- `rms_jitter` called `np.trapezoid`, which exists only from NumPy
+  2.0, while the package declares NumPy >= 1.22. It now falls back to
+  `np.trapz`. CI adds Python 3.10 (missing from the matrix before)
+  and a job on the oldest allowed NumPy 1.22.0 and SciPy 1.8.0.
+- The v0.2.0 notes and the `fracpll.sampled` docstring listed "sampled
+  poles vs exp(sT) of the averaged poles" as a test. It had only been
+  run as a separate script. It is now a test.
+- Wording: the v0.3.0 notes below (and the `fracpll.eventsim`
+  docstring) implied the 1e-15 s pulse-width and 0.5 dB in-band checks
+  also ran with negative Kvco. For negative Kvco the test checks only
+  the more-than-1000x time-domain match.
+
+### Tests (60 total)
+- Sampled poles vs exp(sT) of the averaged poles, to 1e-3 of their
+  distance from z = 1.
+- One dBc convention: psd_to_dbc of `dsm_phase_psd` equals Rhee's
+  printed L(f) to 1e-10 dB, the conversions invert each other, and the
+  line dBc uses the same rule.
+- The negative-Kvco refusals.
+- The lock-transient test is tightened from 0.05 rad to 1e-6 rad on
+  the static offset (0.0628 rad), and from 1e-3 to 1e-9 on the final
+  frequency.
+
+### Changed
+- README rewritten in plain language: a short guide to the terms, a
+  table of the three models and when to use each, seven runnable
+  examples each with the output it prints (checked by running them),
+  the refusals, and what each test compares against.
+- Docstrings added to `LinearVCO.frequency` and
+  `TuningFamily.frequency` / `.kvco`; units added to `static_offset`
+  and `jitter_relative_sigma`.
+
 ## v0.3.0 - 2026-09-21
 
 The in-band effect that 0.2.0 reported without a mechanism is now
