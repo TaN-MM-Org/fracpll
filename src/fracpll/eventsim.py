@@ -50,8 +50,8 @@ fluctuate, the resulting tau^2 terms fold shaped quantization noise
 into the band.  `fracpll.sampled.simulate_sampled(order=2)` computes
 these terms self-consistently and reproduces this simulator cycle by
 cycle -- per-cycle pulse widths to 1e-15 s and the residual 60 dB or
-more below the effect, for shunt capacitances 100 and 400 pF and for
-negative Kvco (tests/test_second_order.py).  The in-pulse control-
+more below the effect, for shunt capacitances 100 and 400 pF, and the
+residual check also for negative Kvco (tests/test_second_order.py).  The in-pulse control-
 voltage ramp (Kvco Icp tau^2/(2 C_shunt)) and the filter's charge
 redistribution nearly cancel; the LASTING part is
 Kvco Icp tau^2/(2 C_total), which is why the effect does not depend
@@ -103,6 +103,7 @@ class LinearVCO:
             raise ValueError("f0_hz must be finite and kvco nonzero")
 
     def frequency(self, vc):
+        """f0 + Kvco * Vc, in Hz, for control voltage vc (V)."""
         return self.f0_hz + self.kvco_hz_per_v * np.asarray(vc)
 
 

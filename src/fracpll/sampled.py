@@ -111,8 +111,13 @@ def continuous_closed_loop_poles(icp, kvco_hz_per_v, n_div, c_shunt,
     1 + Icp Kvco Z/(s N) = 0 becomes the polynomial
     s N Y(s) prod_k (1 + s R_k C_k) + Icp Kvco prod_k (1 + s R_k C_k) = 0.
     Used to show the sampled map reduces to the averaged model at low
-    bandwidth (z = exp(s T)).
+    bandwidth (z = exp(s T)).  Like `fracpll.loop.open_loop`, it takes
+    the magnitude |Kvco| the loop sees and refuses a negative value.
     """
+    if not (np.isfinite(float(kvco_hz_per_v)) and float(kvco_hz_per_v) > 0.0):
+        raise ValueError("pass the magnitude |Kvco| (> 0) the loop sees; "
+                         "the sign goes in pump_polarity for the "
+                         "per-cycle and edge-level models")
     P = np.poly1d([1.0])
     for r, cc in branches:
         P = P * np.poly1d([r * cc, 1.0])

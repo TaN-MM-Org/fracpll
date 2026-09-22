@@ -130,9 +130,13 @@ class TuningFamily:
         return self.curves[t0], self.curves[t1], x
 
     def frequency(self, vc, t_k):
+        """f(Vc) in Hz at temperature t_k (K), linear in T between the
+        two nearest measured curves."""
         c0, c1, x = self._pair(t_k)
         return (1.0 - x) * c0.frequency(vc) + x * c1.frequency(vc)
 
     def kvco(self, vc, t_k):
+        """Tuning gain df/dVc in Hz/V (signed) at temperature t_k (K),
+        linear in T between the two nearest measured curves."""
         c0, c1, x = self._pair(t_k)
         return (1.0 - x) * c0.kvco(vc) + x * c1.kvco(vc)

@@ -37,10 +37,14 @@ def open_loop(w, icp, kvco_hz_per_v, n_div, zfilter):
 
     w : angular frequencies (rad/s), positive.
     icp : charge-pump current (A), > 0.
-    kvco_hz_per_v : oscillator tuning gain (Hz/V); sign carries the
-        tuning polarity (the co-designed GaN ring has negative Kvco
-        with inverted pump polarity -- pass the SIGNED product the
-        loop actually sees, which must make L positive at DC).
+    kvco_hz_per_v : oscillator tuning gain (Hz/V), > 0.  A loop built
+        around a negative-Kvco oscillator (like the co-designed GaN
+        ring) reverses the pump polarity, so the loop sees |Kvco|: pass
+        the magnitude here.  A negative value is refused, because it
+        would give L < 0 at DC -- a loop with positive feedback -- and
+        every result derived from it would be meaningless.  (The
+        per-cycle and edge-level models take the sign directly, with
+        pump_polarity=-1.)
     n_div : division ratio, >= 1.
     zfilter : callable w -> complex impedance (e.g. a lambda over
         `fracpll.filters.loop_filter_impedance`).
@@ -53,6 +57,12 @@ def open_loop(w, icp, kvco_hz_per_v, n_div, zfilter):
         raise ValueError("icp must be finite and positive")
     if not (np.isfinite(kv) and kv != 0.0):
         raise ValueError("kvco_hz_per_v must be finite and nonzero")
+    if kv < 0.0:
+        raise ValueError(
+            "kvco_hz_per_v is negative: a working loop pairs a "
+            "negative-Kvco oscillator with a reversed pump, so the loop "
+            "sees |Kvco|. Pass the magnitude here (the per-cycle and "
+            "edge-level models take the sign with pump_polarity=-1)")
     if not (np.isfinite(n_div) and n_div >= 1.0):
         raise ValueError("n_div must be finite and >= 1")
     z = np.asarray(zfilter(w), dtype=complex)

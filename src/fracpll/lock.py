@@ -51,6 +51,9 @@ __all__ = ["static_offset", "lock_transient"]
 def static_offset(icp, i_leak=0.0, mismatch=0.0):
     """Closed-form static phase offset (rad) at lock.
 
+    icp : pump current (A); i_leak : leakage current (A);
+    mismatch : fractional UP/DN mismatch (dimensionless).
+
     Refuses when the pump cannot cancel the disturbance at any phase
     (|I_leak/Icp - mismatch| >= 1)."""
     icp = float(icp)
@@ -87,7 +90,9 @@ def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
 
     Refuses when the lock target frequency lies outside the measured
     tuning range: the oscillator cannot reach it, and integrating
-    longer will not change that.
+    longer will not change that.  Also refuses a negative-Kvco curve,
+    which this averaged model does not handle (use `simulate_pll` with
+    pump_polarity=-1).
     """
     f_ref = float(f_ref_hz)
     n_div = float(n_div)
@@ -99,6 +104,11 @@ def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
             f"lock target N*f_ref = {f_target:.6g} Hz lies outside "
             f"the measured tuning range [{f_lo:.6g}, {f_hi:.6g}] Hz; "
             "the oscillator cannot reach it at any control voltage")
+    if curve.f_hz[-1] < curve.f_hz[0]:
+        raise ValueError(
+            "this averaged lock model is written for a positive-Kvco "
+            "oscillator; for a negative-Kvco curve use "
+            "fracpll.simulate_pll(curve, ..., pump_polarity=-1)")
     phi_ss = static_offset(icp, i_leak, mismatch)
 
     icp = float(icp)

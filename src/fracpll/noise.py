@@ -20,6 +20,8 @@ this package are ONE-SIDED, in rad^2/Hz, and RMS jitter is
     sigma_t = sqrt( integral S_out df ) / (2 pi f0)      [seconds]
 
 -- integrate once; the one/two-sided factor already lives in the PSDs.
+Measured phase noise in dBc/Hz is L(f) = S_phi(f)/2 (IEEE Std 1139);
+`dbc_to_psd` and `psd_to_dbc` convert with that factor of 2.
 
 House rule: no oscillator noise numbers ship with this package.  A
 `NoiseSpec` is built from YOUR measured (offset, dBc/Hz) points and a
@@ -36,21 +38,32 @@ import numpy as np
 
 from .loop import error_transfer, lowpass_transfer
 
+# np.trapezoid is NumPy >= 2.0; np.trapz is the same rule before that.
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 __all__ = ["NoiseSpec", "white_floor", "synthesizer_psd", "rms_jitter",
            "dbc_to_psd", "psd_to_dbc", "closed_loop_lines"]
 
 
 def dbc_to_psd(dbc_per_hz):
-    """dBc/Hz -> one-sided rad^2/Hz (small-angle: L(f) = S_phi/1)."""
-    return 10.0 ** (np.asarray(dbc_per_hz, dtype=float) / 10.0)
+    """dBc/Hz -> one-sided S_phi in rad^2/Hz.
+
+    Uses the standard definition L(f) = S_phi(f)/2 (IEEE Std 1139),
+    the same convention as `fracpll.mash` (W. Rhee's eq. 3.7 is printed
+    as L(f) and `dsm_phase_psd` returns 2 L(f)) and as the dBc values
+    of `mash_line_spectrum` / `closed_loop_lines`.  So S_phi = 2 x
+    10^(L/10).  (fracpll 0.3.0 and earlier used S_phi = 10^(L/10) here,
+    3 dB below the rest of the package.)
+    """
+    return 2.0 * 10.0 ** (np.asarray(dbc_per_hz, dtype=float) / 10.0)
 
 
 def psd_to_dbc(s_phi):
-    """One-sided rad^2/Hz -> dBc/Hz."""
+    """One-sided S_phi (rad^2/Hz) -> dBc/Hz, L(f) = S_phi(f)/2."""
     s = np.asarray(s_phi, dtype=float)
     if np.any(s <= 0.0):
         raise ValueError("PSD values must be positive")
-    return 10.0 * np.log10(s)
+    return 10.0 * np.log10(s / 2.0)
 
 
 @dataclass(frozen=True)
@@ -177,7 +190,7 @@ def rms_jitter(f_hz, s_out, f0_hz):
         raise ValueError("s_out must be >= 0 on the same grid as f")
     if not (np.isfinite(f0) and f0 > 0.0):
         raise ValueError("f0_hz must be finite and positive")
-    var = np.trapezoid(s, f)
+    var = _trapezoid(s, f)
     return float(np.sqrt(var) / (2.0 * np.pi * f0))
 
 

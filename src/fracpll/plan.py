@@ -40,7 +40,14 @@ def _weights(f):
 
 
 def jitter_relative_sigma(f_hz, s_out, n_avg):
-    """Predicted relative 1-sigma of the RMS-jitter estimate."""
+    """Predicted relative 1-sigma of the RMS-jitter estimate.
+
+    f_hz : offset grid (Hz), increasing; each point is one analyzer
+        reading, averaged n_avg times, independent of the others.
+    s_out : one-sided phase-noise PSD on that grid (rad^2/Hz).
+    n_avg : number of averages (>= 1).
+    Returns sigma(J)/J, dimensionless.
+    """
     n = int(n_avg)
     if n < 1:
         raise ValueError("n_avg must be >= 1")

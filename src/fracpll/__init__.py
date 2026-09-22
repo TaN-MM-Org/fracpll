@@ -28,7 +28,7 @@ from .sampled import (continuous_closed_loop_poles, pulse_doublet_vector,
 from .plan import averages_for_jitter, jitter_relative_sigma
 from .tuning import TuningCurve, TuningFamily, fit_tuning
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",
