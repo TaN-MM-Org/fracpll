@@ -5,6 +5,136 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## v0.4.0 - 2026-09-30
+
+Stability margins at any loop bandwidth, exact integration of measured
+phase noise, readers for measured data files, and a fix to the lock
+settling time.
+
+### Added
+- `sampled_open_loop`: the exact per-cycle open-loop gain
+  G(z) = (pol Icp/(N f_ref)) e_psi^T (zI - Phi)^-1 Phi B of the linear
+  sampled map, on the unit circle for 0 < f <= f_ref/2. The closed
+  loop from divider phase to sampled oscillator phase is G/(1+G).
+- `sampled_margins`: phase margin, gain margin, both crossover
+  frequencies, and the eigenvalue stability flag, at any bandwidth
+  (the averaged `stability` refuses beyond f_ref/10). A sampled loop
+  has a finite gain margin: G is real at z = -1. It refuses when
+  |G| >= 1 at f_ref/2. README example 5's loop, reported as stable,
+  has 2.06 degrees of phase margin and 0.18 dB of gain margin.
+- `rms_jitter(..., method="loglog")`: exact integration between
+  points joined by straight lines on log-log axes (a power law per
+  segment). On four decade points (10 kHz to 10 MHz, -65/-92/-115/
+  -135 dBc/Hz, 2 GHz) it gives 4.869 ps where the trapezoid gives
+  13.579 ps. The default stays "trapezoid".
+- `NoiseSpec.phase_variance(f_lo, f_hi)`: the exact integral (rad^2)
+  of a spec's own log-log interpolation, with no grid.
+- `read_noise_csv`, `read_tuning_csv` (new module `fracpll.readers`):
+  a `NoiseSpec` or a fitted `TuningCurve` from a delimited text file.
+  Separator detected per line (; , tab or whitespace), header lines
+  skipped, columns and frequency unit selectable, UTF-8 byte-order
+  mark accepted. Text inside the data, non-increasing x, and
+  non-finite values are refused with the line number. No instrument
+  format is assumed; a decimal comma is not supported.
+
+### Fixed
+- `lock_transient`'s `t_settle` was rounded up to the next output
+  sample: the last sample outside the band plus one. With the default
+  2000 samples over t_end = 31.8 ms (15.9 us apart), the README
+  example reported 31.8 us, exactly two samples. It is now the root of
+  |phi(t) - phi_static| = settle_tol_rad on the solver's dense
+  output (scanning each solver step at its ends and 8 interior
+  points, then Brent's method), independent of `n_eval`.
+- `lock_transient` accepted `vc0` outside the measured tuning range
+  (the curve does not extrapolate; the run held the oscillator at the
+  edge frequency), a non-positive `c_shunt` or branch capacitor, a
+  non-positive `settle_tol_rad` or `t_end`, `n_eval < 2`, a
+  non-finite or non-positive `f_ref_hz`, and `n_div < 1`. These are
+  now refused.
+- `lock_transient`'s docstring said the default `t_end` was "400
+  reference-scaled loop time constants"; the code has always used
+  1e5 N / (2 pi f_ref) s (31.8 ms for N = 100 at 50 MHz). The
+  docstring now states the formula; the default is unchanged.
+- `pfd_static_offset` returned NaN for NaN inputs and raised
+  ZeroDivisionError for `f_ref_hz = 0` (the division ran before the
+  check); both now raise ValueError.
+- `stability` with `f_lo >= f_hi` (or `f_lo <= 0`) scanned the band
+  backwards and refused with a misleading "crosses unity only upward"
+  message; it now says the band is invalid.
+
+### Behaviour changes
+- `lock_transient(...)["t_settle"]` changes. README example 3:
+  31.847 us before, 28.985 us after (printed 31.8 -> 29.0 us). The
+  pre-0.4.0 value is always at most one output sample above the new
+  one (asserted). Everything else it returns (`t`, `phi_e`, `vc`,
+  `locked`, `phi_static`) is bit-identical to 0.3.1 for the same
+  inputs (checked by hand on the README example, not by a test).
+- Inputs listed under Fixed that used to return a result now raise
+  ValueError.
+
+### Tests (90 total, 30 new)
+- `sampled_open_loop` vs the aliased averaged gain
+  sum_m L(j(w + m 2 pi f_ref)) (the 1/w^2 tail summed in closed form)
+  to 1e-10 relative, slow and fast loop, including z = -1; vs the
+  closed form -Icp Kv T^2 / (4 N C sin^2(pi f T)) of a capacitor-only
+  filter to 1e-9, whose phase margin is 0 (to 1e-9 degrees) and whose
+  poles sit at exp(+-j 2 pi f_c T) (to 1e-9). For that filter G is
+  real and negative at every frequency, so the phase crossover is the
+  crossover itself and the gain margin 0 dB (to 1e-9 dB), checked with
+  41, 401 and 4001 scan points. (During review, the scan was found to
+  start at the grid point after the crossover, which here gave a
+  grid-dependent margin; it now starts at the crossover. In a scan of
+  several hundred one- and two-branch loops, none had a phase
+  crossover other than f_ref/2 or this degenerate one.)
+- Margins by eigenvalues: rotating the loop gain by the phase margin,
+  or scaling it by the gain margin, puts an eigenvalue of the modified
+  one-period map at exp(j 2 pi f T) of the matching crossover, to
+  1e-8. Icp x gain margin equals the Icp at which the spectral radius
+  reaches 1 (found by root finding on the eigenvalues) to 1e-9. Slow
+  loop: crossover within 1e-4 and phase margin within 0.01 degrees of
+  the averaged `stability`; negative Kvco with pump_polarity=-1 gives
+  the same margins to 1e-12.
+- Time domain: a sinusoidal divider phase through
+  `simulate_sampled(order=1)` gives Re(A G/(1+G) e^{j theta k}) to
+  1e-9; MASH-1 tones through `closed_loop_lines` with the per-cycle
+  gain equal the exact DFT of the per-cycle simulation to 1e-6, in a
+  fast loop `stability` refuses.
+- Lock: in the small-signal limit (linear curve, start at the lock
+  voltage, 1e-3 rad step, no leakage) the trajectory equals expm(A t)
+  of the hand-built linear system to 1e-5 of the step (1.7e-6
+  observed) and `t_settle` its exact band exit to 3e-5 (5e-6
+  observed). `t_settle` with 2000 and 20000 samples agrees to 1e-9,
+  and a separate integration stopped exactly at `t_settle` puts the
+  phase on the band edge to 1e-6 rad (2e-9 observed; a 1e-4 relative
+  error in `t_settle` would give 2.1e-5 rad), outside it 1e-4 earlier,
+  and 0.017 rad inside it at the pre-0.4.0 value.
+- Log-log integration vs the closed-form power-law integral for
+  slopes -3, -2, -1, -1+1e-13 (against a Taylor series, since the
+  textbook form cancels there), 0 and 1.5, to 1e-12;
+  `NoiseSpec.phase_variance` vs a 400001-point trapezoid of the spec
+  to 1e-8 and vs a hand-summed piecewise power law to 1e-12.
+- Readers: 17-digit values read back bit for bit with each separator,
+  header, byte-order mark, column choice and unit scale; a loaded
+  power-law trace integrates to the closed form to 1e-12; refusals
+  name the line.
+- Input refusals listed under Fixed.
+- The full suite also passes with NumPy 1.22.0 and SciPy 1.8.0
+  (run locally on Python 3.10; CI runs this job on Python 3.9).
+
+### Changed
+- README: examples 8 (margins of a fast loop) and 9 (noise from a
+  file, integrated exactly), example 3's output, the list of checks,
+  refusals and limits; 90 tests.
+- Honest labels: README examples 2, 3 and 4 gave their illustrative
+  numbers `reference` strings naming an instrument and a notebook date
+  ("R&S FSWP, open-loop VCO, notebook 2026-09-18", "PFD+CP floor,
+  notebook 2026-09-18", "VNA + SMU sweep, notebook 2026-09-18") or a
+  datasheet ("VCO datasheet rev B, Kvco at 25 C"). Those numbers were
+  never measured; the strings now say "illustrative ..., not a
+  measurement" (or "not a datasheet"). Test fixtures that did the same
+  now say "synthetic ..., fracpll test suite". No printed result
+  changes.
+
 ## v0.3.1 - 2026-09-22
 
 Three code fixes found in a review of 0.3.0, two corrections to

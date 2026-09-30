@@ -20,6 +20,9 @@ questions every design has to answer:
 - How long must the measurement instrument average before the jitter
   number is trustworthy?
 
+It also reads your measured noise traces and tuning curves straight
+from text files (CSV and similar).
+
 The main results are checked by automated tests against independent
 calculations (see [How the results are checked](#how-the-results-are-checked)).
 One exception is stated there: the lock settling time is an estimate.
@@ -81,6 +84,8 @@ A synthesizer of this kind is a feedback loop. Going around the loop:
   loop follows the reference; above it the oscillator runs on its own.
   **Phase margin**, in degrees, measures how far the loop is from
   oscillating: more is safer, and zero or less means it is unstable.
+  **Gain margin**, in dB, says how much the loop gain (for example the
+  pump current) could grow before the loop becomes unstable.
 - **Phase noise** -- small random wobbles in the output timing, given
   as a spectrum over offset frequency. It is quoted in **dBc/Hz**
   (decibels relative to the output, per hertz of bandwidth). Inside the
@@ -121,7 +126,7 @@ overlap.
 | Model | What it treats as smooth | Good for | Main functions |
 |---|---|---|---|
 | **Averaged** | The current bursts are averaged over each reference cycle | Stability, phase noise and jitter, lock-in, when the loop bandwidth is well below the reference (below `f_ref/10`) | `stability`, `synthesizer_psd`, `lock_transient` |
-| **Per cycle** | Nothing is averaged; one step per reference cycle, small deviations from lock | Stability at any bandwidth; fast noise runs that include the finite pulse width | `sampled_stability`, `simulate_sampled` |
+| **Per cycle** | Nothing is averaged; one step per reference cycle, small deviations from lock | Stability, phase margin and gain margin at any bandwidth; fast noise runs that include the finite pulse width | `sampled_margins`, `sampled_stability`, `simulate_sampled` |
 | **Edge by edge** | Nothing; every reference and divider edge time is solved for (exactly for a straight-line tuning curve, by accurate numerical integration for a measured one) | Large disturbances, pull-in with skipped cycles, pump mismatch, leakage, dead zone, measured tuning curves | `simulate_pll` |
 
 Rule of thumb: start with the averaged model. If it refuses because
@@ -132,7 +137,7 @@ simulator.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with fracpll 0.3.1. The circuit values are illustrative
+printed with fracpll 0.4.0. The circuit values are illustrative
 design values, not a recommended design.
 
 ### 1. Is the loop stable?
@@ -175,10 +180,11 @@ f = np.geomspace(1e4, 1e7, 800)                  # offsets 10 kHz .. 10 MHz
 lg = open_loop(2 * np.pi * f, 100e-6, 20e6, 40.0, zf)
 
 # Your measured free-running oscillator noise (dBc/Hz at each offset).
-# The numbers here are placeholders; the reference text is required.
+# The numbers here are placeholders: put yours in, and say in
+# `reference` where they came from (instrument and date, or a citation).
 vco = NoiseSpec((1e4, 1e5, 1e6, 1e7), (-65.0, -92.0, -115.0, -135.0),
-                reference="R&S FSWP, open-loop VCO, notebook 2026-09-18")
-pfd = white_floor(-102.0, "PFD+CP floor, notebook 2026-09-18")
+                reference="illustrative VCO noise points, not a measurement")
+pfd = white_floor(-102.0, "illustrative PFD+CP floor, not a measurement")
 
 out = synthesizer_psd(f, lg, 40.0,
                       s_vco=vco.psd(f),
@@ -216,7 +222,7 @@ from fracpll import fit_tuning, lock_transient
 # Your measured tuning curve: control voltage (V) -> frequency (Hz).
 curve = fit_tuning(vc=[0.0, 1.0, 2.0, 3.0],
                    f_hz=[4.8e9, 5.2e9, 5.6e9, 6.0e9],
-                   reference="VNA + SMU sweep, notebook 2026-09-18")
+                   reference="illustrative tuning points, not a measurement")
 
 res = lock_transient(curve, n_div=100.0, f_ref_hz=50e6, icp=200e-6,
                      c_shunt=50e-12, branches=[(4.7e3, 1.5e-9)],
@@ -228,7 +234,7 @@ print(f"phase error left by the leakage: {res['phi_static']:.4f} rad")
 
 ```
 locked: True
-settles in 31.8 us
+settles in 29.0 us
 phase error left by the leakage: 0.0628 rad
 ```
 
@@ -241,7 +247,13 @@ the averaged model, which is written for a positive Kvco (for a
 falling tuning curve it refuses and points to `simulate_pll`). It
 replaces the phase detector's exact behaviour with a smooth curve
 (a tanh), so the settling time is an estimate; `simulate_pll` gives
-the edge-accurate transient. The leftover phase error is a closed-form value,
+the edge-accurate transient. The settling time is the last moment the
+phase error is more than `settle_tol_rad` (default 0.05 rad) away from
+its final value. Since 0.4.0 it is found on the solver's continuous
+solution; before, it was rounded up to the next of 2000 output
+samples, and this example printed 31.8 us.
+
+The leftover phase error is a closed-form value,
 `2 pi atanh(I_leak / Icp)` here (it also includes pump mismatch when
 you give one), and the test suite checks that the simulated transient
 settles onto it.
@@ -252,7 +264,7 @@ settles onto it.
 from fracpll import LinearVCO, simulate_pll, pfd_static_offset
 
 vco = LinearVCO(f0_hz=4.8e9, kvco_hz_per_v=400e6,
-                reference="VCO datasheet rev B, Kvco at 25 C")
+                reference="illustrative design values, not a datasheet")
 
 # 2 uA leakage, 100 ps reset delay, DN current 5 % weaker than UP.
 run = simulate_pll(vco, n_int=100, f_ref_hz=50e6, icp=200e-6,
@@ -304,7 +316,8 @@ per-cycle model: stable = True (growth factor per cycle 0.99501; below 1 means s
 The averaged model treats the current bursts as a smooth current. That
 is only accurate when the loop is much slower than the reference, so
 it refuses here. The per-cycle model steps the loop once per reference
-cycle exactly and answers at any speed.
+cycle exactly and answers at any speed. "Stable" is not the same as
+"well designed": example 8 shows that this loop has almost no margin.
 
 ### 6. Spurs from a first-order divider
 
@@ -393,6 +406,85 @@ this effect with no fitted numbers and matches the edge-by-edge result;
 `order=1` is the linear model. (Welch and `signal` above come from
 SciPy and are used only to measure the spectra.)
 
+### 8. Phase and gain margin of a fast loop
+
+```python
+from fracpll import sampled_margins
+
+loop = dict(icp=0.5e-3, kvco_hz_per_v=400e6, n_div=10, f_ref_hz=50e6)
+m = sampled_margins(c_shunt=2e-12, branches=[(20e3, 200e-12)], **loop)
+print(f"loop bandwidth {m['f_crossover_hz'] / 1e6:.2f} MHz, "
+      f"phase margin {m['phase_margin_deg']:.2f} degrees")
+print(f"gain margin {m['gain_margin_db']:.2f} dB "
+      f"(at {m['f_phase_crossover_hz'] / 1e6:.1f} MHz), stable = {m['stable']}")
+
+slow = sampled_margins(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0,
+                       f_ref_hz=50e6, c_shunt=100e-12,
+                       branches=[(4.7e3, 1.5e-9)])
+print(f"example 1 loop: {slow['f_crossover_hz']:.0f} Hz, "
+      f"{slow['phase_margin_deg']:.1f} degrees, "
+      f"gain margin {slow['gain_margin_db']:.1f} dB")
+```
+
+```
+loop bandwidth 22.68 MHz, phase margin 2.06 degrees
+gain margin 0.18 dB (at 25.0 MHz), stable = True
+example 1 loop: 40015 Hz, 54.2 degrees, gain margin 86.0 dB
+```
+
+`sampled_margins` works from the exact per-cycle loop gain
+(`sampled_open_loop`), so it answers at any loop speed. The fast loop
+of example 5 is stable, but only just: 2 degrees of phase margin, and
+a pump current only 2 % (0.18 dB) higher would make it oscillate at
+half the reference frequency. For the slow loop of example 1 it agrees
+with the averaged model (40014 Hz and 54.2 degrees in example 1). A
+sampled loop also has a finite gain margin, which the averaged model
+cannot give: its phase always returns to -180 degrees at half the
+reference frequency.
+
+### 9. Measured noise from a file, integrated exactly
+
+```python
+import numpy as np
+from fracpll import read_noise_csv, rms_jitter, dbc_to_psd
+
+# A small file of the kind an analyzer or a bench script saves:
+# a header line, then one "offset, dBc/Hz" row per point.
+with open("vco_noise.csv", "w") as fh:
+    fh.write("Offset (Hz),Phase noise (dBc/Hz)\n"
+             "1e4,-65\n1e5,-92\n1e6,-115\n1e7,-135\n")
+
+vco = read_noise_csv("vco_noise.csv",
+                     reference="illustrative decade points, not a measurement")
+var = vco.phase_variance(1e4, 1e7)          # rad^2, exact between points
+print(f"jitter of these points at 2 GHz: "
+      f"{np.sqrt(var) / (2 * np.pi * 2e9) * 1e12:.3f} ps")
+
+f = np.array(vco.f_offset_hz)
+s = dbc_to_psd(np.array(vco.dbc_per_hz))
+print(f"same four points, log-log rule: "
+      f"{rms_jitter(f, s, 2e9, method='loglog') * 1e12:.3f} ps")
+print(f"same four points, trapezoid:    {rms_jitter(f, s, 2e9) * 1e12:.3f} ps")
+```
+
+```
+jitter of these points at 2 GHz: 4.869 ps
+same four points, log-log rule: 4.869 ps
+same four points, trapezoid:    13.579 ps
+```
+
+`read_noise_csv` skips the header line, reads the rows and builds a
+`NoiseSpec` (the `reference` is still required). `phase_variance`
+integrates the noise exactly as the spec draws it: straight lines
+between the points on a log-log plot. Given only a few points far
+apart, the ordinary trapezoid rule (straight lines on linear axes,
+the default of `rms_jitter`) overstates the jitter badly, here by a
+factor of 2.8; `method="loglog"` avoids that. On a dense grid the
+two rules agree: on the 800 points of example 2 they differ by about
+1 part in 10^5.
+`read_tuning_csv` does the same for a (control voltage, frequency)
+file and returns a fitted tuning curve.
+
 ## What is in the package
 
 **Loop and stability** (averaged model)
@@ -426,7 +518,11 @@ SciPy and are used only to measure the spectra.)
   required `reference` saying where it came from.
 - `synthesizer_psd` -- the output noise from the three sources.
 - `closed_loop_lines` -- divider tones as output spurs.
-- `rms_jitter` -- jitter in seconds from a noise spectrum.
+- `rms_jitter` -- jitter in seconds from a noise spectrum;
+  `method="loglog"` integrates exactly between points joined by
+  straight lines on a log-log plot (use it for a few measured points).
+- `NoiseSpec.phase_variance(f_lo, f_hi)` -- the exact integrated
+  phase noise (rad^2) of a measured spec, with no grid.
 - `dbc_to_psd`, `psd_to_dbc` -- conversions between dBc/Hz and
   rad^2/Hz, using dBc/Hz = 10 log10(`S_phi`/2).
 
@@ -440,6 +536,14 @@ SciPy and are used only to measure the spectra.)
   the measured curve, and the phase error that leakage and mismatch
   leave behind.
 
+**Reading measured data**
+
+- `read_noise_csv`, `read_tuning_csv` -- a `NoiseSpec` or a fitted
+  tuning curve from a text file (comma, semicolon, tab or space
+  separated; header lines skipped; choose the columns and the
+  frequency unit). Text inside the data, repeated or unsorted
+  points and missing values are refused with the line number.
+
 **Measurement planning**
 
 - `jitter_relative_sigma`, `averages_for_jitter` -- how uncertain a
@@ -451,6 +555,9 @@ SciPy and are used only to measure the spectra.)
 - `sampled_loop_map`, `sampled_stability` -- the exact one-cycle
   step of the loop for small deviations from lock, and stability from
   it.
+- `sampled_open_loop`, `sampled_margins` -- the exact per-cycle loop
+  gain, and the phase margin and gain margin read from it, at any
+  loop bandwidth.
 - `continuous_closed_loop_poles` -- the averaged model's poles, for
   comparison.
 - `simulate_sampled(..., order=1 or 2)` -- a fast cycle-by-cycle
@@ -481,7 +588,8 @@ gives its inputs, units and conventions.
   (1980)); the message points to the per-cycle model;
 - the loop gain does not fall through 1 within the scanned band
   (by default `f_ref/10^6` to `f_ref/2`), or the phase margin is zero
-  or negative;
+  or negative (`stability`); for `sampled_margins`, when the loop gain
+  is still 1 or more at `f_ref/2` (such a loop is always unstable);
 - a negative Kvco is given to an averaged-model function (pass its
   size; the sign belongs in `pump_polarity` for the other models);
 - smooth noise is asked of a first-order divider (it makes tones; use
@@ -490,24 +598,27 @@ gives its inputs, units and conventions.
   range;
 - a measured tuning curve folds back (the error names the voltage
   where it happens);
-- the lock target frequency is outside the oscillator's measured
-  range;
+- the lock target frequency, or the starting control voltage of
+  `lock_transient`, is outside the oscillator's measured range;
 - leakage or mismatch is too large for the pump to cancel;
 - the phase detector has no locked state (for example inside a dead
   zone with nothing to push it out);
-- a measured value is given without saying where it came from.
+- a measured value is given without saying where it came from;
+- a data file has text inside its data, repeated or unsorted points,
+  or missing values (the message gives the line number).
 
 ## How the results are checked
 
-60 automated tests run on every change, on Python 3.9 to 3.14, and
+90 automated tests run on every change, on Python 3.9 to 3.14, and
 once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
 (1.8.0) the package allows. Each numerical check compares the package with something independent of
 it: an exact formula, a second calculation done a different way, or a
 published result; none compares against a number stored from an
 earlier run. The rest check that the refusals fire, plus one check of
 the version number and the list of exported names. The lock settling
-time of example 3 is only checked to be positive; treat it as an
-estimate. The main checks:
+time is checked against an exact solution only in the small-signal
+limit (below); for a large start-up transient such as example 3 it
+remains the tanh model's estimate. The main checks:
 
 **Averaged model**
 
@@ -520,14 +631,31 @@ estimate. The main checks:
 - The smooth delta-sigma noise formula agrees within 15 % with the
   measured spectrum of the actual divider pattern.
 - The jitter calculation matches exact results for flat and
-  falling-slope noise.
+  falling-slope noise. The log-log rule matches the exact integral of
+  a power law, for slopes from -3 to +1.5 including -1 (a
+  logarithm), to 1 part in 10^12, and a dense-grid integration of a
+  measured spec to 1 part in 10^8.
 - The measurement-planning formula agrees within 6 % with 4000
   simulated measurements.
 - The lock transient settles onto its closed-form phase error to
   10^-6 rad, with the oscillator on `N * f_ref` to 1 part in 10^9.
+- For a small phase step from lock on a straight-line tuning curve,
+  where the averaged model is linear, the transient matches the
+  matrix-exponential solution of that linear system to 10^-5 of the
+  step, and the settling time to 3 parts in 10^5. The settling time
+  no longer changes with the number of output samples (to 1 part in
+  10^9).
 - The dBc/Hz conversion reproduces the printed form of the delta-sigma
   noise formula (eq. 3.7 of W. Rhee's thesis, University of Illinois,
   2001), and spur dBc values use the same rule.
+
+**Reading data files**
+
+- Numbers written to a file with 17 significant digits read back
+  bit for bit, with any of the four separators, a header, a byte-order
+  mark, a chosen column or a unit scale; a file of an exact power law
+  integrates to the closed form to 1 part in 10^12; each refusal is
+  checked to name the right line.
 
 **Divider tones**
 
@@ -564,6 +692,26 @@ estimate. The main checks:
   (2009)).
 
 **Per-cycle model and pulse-width effect**
+
+- The per-cycle loop gain equals the averaged loop gain summed over
+  all its aliases (shifts by multiples of `f_ref`, an exact identity)
+  to 1 part in 10^10, for the slow loop of example 1 and the fast
+  loop of example 5, and, for a filter that is a single capacitor, a
+  closed form to 1 part in 10^9; for that filter the phase margin and
+  the gain margin are both 0 whatever the scan grid.
+- The margins are checked by eigenvalues: shifting the phase of the
+  loop gain by the phase margin, or scaling it by the gain margin,
+  puts a pole of
+  the per-cycle map on the unit circle at the matching frequency (to
+  10^-8). In the fast loop, the pump current times the gain margin
+  equals the current at which the loop becomes unstable (found
+  separately from the poles) to 1 part in 10^9. For the slow loop the
+  margins agree with the averaged model (bandwidth to 10^-4, phase
+  margin to 0.01 degrees).
+- Driven by a sine wave, or by the exact tones of a first-order
+  divider in a fast loop the averaged model refuses, the per-cycle
+  simulation gives the output that the per-cycle loop gain predicts
+  (to 1 part in 10^9 and 10^6 respectively).
 
 - For a slow loop, the per-cycle and averaged models predict the same
   settling behaviour: their poles match after the conversion
@@ -615,20 +763,42 @@ extra low-offset noise in the edge-by-edge simulator without a cause.
   although the package allows NumPy 1.22. It now works on both, and
   NumPy 1.22.0 with SciPy 1.8.0 is tested.
 
+**0.4.0 fixed the lock settling time and tightened input checks.**
+
+- `lock_transient` rounded its settling time up to the next output
+  sample (by default 2000 samples over about 32 ms, so 15.9 us
+  steps). Example 3 printed 31.8 us, exactly two samples; the settling
+  time is 29.0 us. It is now found on the solver's continuous
+  solution, whatever `n_eval` is. The transient itself (`t`, `phi_e`,
+  `vc`, `locked`) is unchanged, bit for bit.
+- `lock_transient` accepted a starting control voltage outside the
+  measured tuning curve (holding the oscillator at the curve's edge
+  while the filter voltage came back into range) and a negative
+  capacitor (returning a meaningless run); `pfd_static_offset`
+  returned NaN for a NaN input and raised a division-by-zero error for
+  `f_ref_hz = 0`; `stability` scanned a reversed band and gave a
+  misleading message. All are now refused with a clear message.
+
 The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Limits
 
 - The averaged model is valid only for loops much slower than the
-  reference. It says so and refuses beyond `f_ref/10`.
+  reference. It says so and refuses beyond `f_ref/10`; use
+  `sampled_margins` for stability margins of faster loops.
 - `lock_transient` replaces the phase detector with a smooth tanh
-  curve, so its settling time is an estimate. Use `simulate_pll` for
-  an edge-accurate transient.
+  curve, so for a large start-up transient its settling time is only
+  an estimate of the real loop's; the tests check it against an exact
+  solution only in the small-signal limit. Use `simulate_pll` for an
+  edge-accurate transient.
 - The per-cycle model covers small deviations from lock, with equal
   UP and DN currents, no leakage, no dead zone and a constant Kvco.
   `order=2` keeps effects up to the square of the pulse width and
   drops smaller ones (cube and higher); in the tested designs these
   are 60 dB or more below the second-order effect.
+  `sampled_open_loop` and `sampled_margins` use the linear
+  (first-order) per-cycle model; the pulse-width effect of
+  `order=2` is not part of the margins.
 - In the edge-by-edge simulator, the pump switches instantly apart
   from the stated delays. The dead zone is modelled as a turn-on delay,
   not as transistor physics. The only noise the simulator itself
@@ -639,6 +809,15 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   ignores that the divider pattern repeats exactly. The tests confirm
   it within 10 % for long repeat lengths; for short ones, use
   `mash_line_spectrum` for the exact tones.
+- `rms_jitter` keeps the trapezoid rule as its default, so existing
+  results do not change; on a few widely spaced points it overstates
+  a falling spectrum, and `method="loglog"` is the right choice there.
+  The measurement plan (`jitter_relative_sigma`,
+  `averages_for_jitter`) uses the trapezoid weights, which suits a
+  dense analyzer trace.
+- The file readers do not know any instrument's file format; you
+  choose the columns and the frequency unit. A decimal comma (`1,5`)
+  is not supported.
 - No transistor models, device physics or foundry data ship with the
   package. Your measured tuning curves and noise carry the technology,
   each with a required `reference` field.
