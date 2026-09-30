@@ -12,7 +12,7 @@ from fracpll import (TuningFamily, continuous_closed_loop_poles,
                      fit_tuning, loop_filter_impedance, lock_transient,
                      open_loop, stability, static_offset)
 
-REF = "VNA + SMU sweep, lab notebook 2026-09-18"
+REF = "synthetic tuning curve, fracpll test suite"
 
 # a smooth negative-Kvco curve (varactor-tuned ring style), exactly
 # representable checks are done against the PCHIP itself, not this form

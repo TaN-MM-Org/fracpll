@@ -51,6 +51,11 @@ def test_pfd_offset_refusals_and_first_order_agreement():
         pfd_static_offset(FR, 200e-6, t_reset=10e-12, t_deadzone=50e-12)
     with pytest.raises(ValueError, match="reference period"):
         pfd_static_offset(FR, 200e-6, i_leak=250e-6)
+    # 0.4.0: a NaN input used to come back as a NaN offset
+    with pytest.raises(ValueError, match="finite"):
+        pfd_static_offset(float("nan"), 200e-6)
+    with pytest.raises(ValueError, match="finite"):
+        pfd_static_offset(FR, 200e-6, i_leak=float("nan"))
     # the averaged tanh detector agrees to first order in rho:
     rho = 0.01
     exact = pfd_static_offset(FR, 200e-6, i_leak=rho * 200e-6)

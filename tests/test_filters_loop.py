@@ -64,3 +64,14 @@ def test_refusals():
         # pure integrator (no zero): -180 deg everywhere
         zint = lambda w: loop_filter_impedance(w, C1)
         stability(100e-6, 20e6, 40.0, zint, f_ref_hz=1e9)
+
+
+def test_scan_band_must_be_ordered():
+    """0.4.0: a reversed band used to be scanned backwards and refused
+    with a misleading 'crosses unity only upward' message."""
+    zf = lambda w: loop_filter_impedance(w, C1, [(R2, C2)])
+    with pytest.raises(ValueError, match="f_lo < f_hi"):
+        stability(100e-6, 20e6, 40.0, zf, f_ref_hz=50e6, f_lo=5e6,
+                  f_hi=1e3)
+    with pytest.raises(ValueError, match="f_lo < f_hi"):
+        stability(100e-6, 20e6, 40.0, zf, f_ref_hz=50e6, f_lo=0.0)

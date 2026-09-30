@@ -98,7 +98,7 @@ def test_noisespec_refusals():
     with pytest.raises(ValueError, match="reference"):
         NoiseSpec((1e3, 1e6), (-90.0, -120.0), reference="x")
     spec = NoiseSpec((1e3, 1e6), (-90.0, -120.0),
-                     reference="R&S FSWP, lab notebook 2026-09-18")
+                     reference="synthetic points, fracpll test suite")
     with pytest.raises(ValueError, match="measured range"):
         spec.psd(1e7)
     # log-log interpolation hits the endpoints exactly
