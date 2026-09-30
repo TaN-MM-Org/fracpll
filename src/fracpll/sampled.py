@@ -37,6 +37,13 @@ independent code paths, one trajectory), and, at low bandwidth, its
 poles z are checked against exp(s T) of the continuous closed-loop
 poles, which recovers the averaged model where it is valid.
 
+Since 0.4.0 the same map also gives the exact per-cycle loop gain
+G(z) (`sampled_open_loop`) and, from it, phase and gain margins at any
+bandwidth (`sampled_margins`).  G is held in the tests against the
+aliased sum of the averaged gain, sum_m L(j(w + m 2 pi f_ref)), the
+margins against eigenvalue routes, and G/(1+G) against the per-cycle
+simulation in the time domain.
+
 Honest limits: this is the SMALL-SIGNAL map about lock, with matched
 pumps and no dead zone (a dead zone has zero gain at the origin, so
 there is nothing to linearise; `fracpll.eventsim` handles it).  It
@@ -47,10 +54,12 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.linalg import expm
+from scipy.optimize import brentq
 
 from ._network import FilterModes
 
 __all__ = ["sampled_loop_map", "sampled_stability",
+           "sampled_open_loop", "sampled_margins",
            "continuous_closed_loop_poles", "simulate_sampled",
            "pulse_doublet_vector"]
 
@@ -101,6 +110,164 @@ def sampled_stability(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
     rho = float(np.max(np.abs(z)))
     return {"stable": bool(rho < 1.0), "spectral_radius": rho,
             "poles": z}
+
+
+def sampled_open_loop(f_hz, icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
+                      branches=(), pump_polarity=1):
+    """Exact per-cycle open-loop gain G(z) on the unit circle.
+
+    Breaking the loop of `sampled_loop_map` at the phase detector, a
+    divider-phase error e_k (oscillator cycles) at reference edge k
+    makes the charge pol Icp e_k / (N f_ref), and the oscillator phase
+    sampled at the following edges answers with
+
+        G(z) = (pol Icp / (N f_ref)) e_psi^T (z I - Phi)^(-1) Phi B,
+
+    so the closed loop from the divider phase u to the sampled
+    oscillator phase psi is G/(1+G), and 1 + G(z) = 0 exactly at the
+    poles of the one-period map F (matrix determinant lemma).  Returned
+    at z = exp(j 2 pi f / f_ref) for 0 < f <= f_ref/2; at f = f_ref/2
+    (z = -1) it is real.
+
+    G is the exact discrete-time counterpart of the averaged loop gain
+    L(jw) of `fracpll.loop.open_loop`: by the Poisson sum it equals
+    sum over all integers m of L(j(w + m 2 pi f_ref)) -- the averaged
+    gain plus all of its aliases -- which the tests check to 1e-10.
+    At offsets far below f_ref the m = 0 term dominates and G -> L.
+
+    Sign convention: as in `sampled_loop_map`, pass the signed Kvco
+    with pump_polarity=-1 for a negative-Kvco oscillator; G then equals
+    the positive-Kvco loop of the same |Kvco|.
+    """
+    f = np.atleast_1d(np.asarray(f_hz, dtype=float))
+    f_ref = float(f_ref_hz)
+    if not (np.isfinite(f_ref) and f_ref > 0.0):
+        raise ValueError("f_ref_hz must be finite and positive")
+    if not np.all(np.isfinite(f)) or np.any(f <= 0.0) \
+            or np.any(f > 0.5 * f_ref):
+        raise ValueError("offsets must satisfy 0 < f <= f_ref/2: a "
+                         "sampled loop has no separate response beyond "
+                         "Nyquist (f and f_ref - f are the same point "
+                         "of the unit circle)")
+    m = sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
+                         branches, pump_polarity)
+    Phi = m["Phi"]
+    n1 = Phi.shape[0]
+    b = FilterModes(c_shunt, branches).state_matrices()[1]
+    PB = Phi @ np.r_[b, 0.0]
+    z = np.exp(2j * np.pi * f / f_ref)
+    z[f == 0.5 * f_ref] = -1.0            # exactly real at Nyquist
+    a = z[:, None, None] * np.eye(n1)[None, :, :] - Phi[None, :, :]
+    rhs = np.broadcast_to(PB.astype(complex), (f.size, n1))[:, :, None]
+    x = np.linalg.solve(a, rhs)[:, :, 0]
+    k = int(pump_polarity) * float(icp) / (float(n_div) * f_ref)
+    return k * x[:, -1]
+
+
+def sampled_margins(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
+                    branches=(), pump_polarity=1, f_lo=None,
+                    n_grid=4001):
+    """Phase margin and gain margin of the exact per-cycle loop.
+
+    Works at ANY loop bandwidth, including the fast loops that
+    `fracpll.loop.stability` refuses (crossover above f_ref/10).  It
+    reads the exact loop gain G of `sampled_open_loop` on a log grid
+    from f_lo (default f_ref/1e6) to f_ref/2, refines by root finding,
+    and returns
+
+    * f_crossover_hz, phase_margin_deg: where |G| last falls through 1,
+      and 180 deg + arg G there (in (-180, 180]);
+    * f_phase_crossover_hz, gain_margin_db: the first frequency at or
+      above the crossover where G is real and negative (its phase is
+      -180 deg), and -20 log10 |G| there.  A sampled loop always has one by
+      f_ref/2 when G(z=-1) < 0, so unlike the averaged model it has a
+      finite gain margin: the factor 10^(gain_margin_db/20) is how much
+      Icp can grow before a pole leaves the unit circle there (the
+      tests check it against the eigenvalue route to 1e-9).  If G is
+      never real and negative above the crossover, gain_margin_db is
+      +inf and f_phase_crossover_hz is NaN;
+    * stable, spectral_radius: from the eigenvalues of the one-period
+      map (`sampled_stability`) -- the authority on stability; the
+      margins say how far the loop is from losing it.
+
+    Refuses when |G| does not fall through 1 between f_lo and f_ref/2,
+    in particular when |G| >= 1 still at f_ref/2.  Such a loop is
+    unstable: for this filter family every alias term of G(-1) has a
+    negative real part (the filter impedance is capacitive), so
+    G(-1) <= -1, and a Schur-stable characteristic polynomial p of
+    degree d needs (-1)^d p(-1) > 0, i.e. 1 + G(-1) > 0 here.
+
+    Honest limits: the same small-signal model as `sampled_loop_map`
+    (matched pumps, no dead zone, constant Kvco, linear in the pulse
+    width).
+    """
+    f_ref = float(f_ref_hz)
+    if not (np.isfinite(f_ref) and f_ref > 0.0):
+        raise ValueError("f_ref_hz must be finite and positive")
+    f_hi = 0.5 * f_ref
+    f_lo = f_ref * 1e-6 if f_lo is None else float(f_lo)
+    if not (np.isfinite(f_lo) and 0.0 < f_lo < f_hi):
+        raise ValueError("need 0 < f_lo < f_ref/2")
+    args = (icp, kvco_hz_per_v, n_div, f_ref, c_shunt, branches,
+            pump_polarity)
+    f = np.geomspace(f_lo, f_hi, int(n_grid))
+    f[-1] = f_hi
+    g = sampled_open_loop(f, *args)
+    mag = np.abs(g)
+
+    def gain(x):
+        return sampled_open_loop(min(x, f_hi), *args)[0]
+
+    if mag[-1] >= 1.0:
+        raise ValueError(
+            f"|G| = {mag[-1]:.4g} >= 1 still at f_ref/2: the loop gain "
+            "is too high for a phase detector that acts once per "
+            "reference cycle, and the loop is unstable (gain margin "
+            f"{-20.0 * np.log10(mag[-1]):.3g} dB). Reduce Icp or Kvco, "
+            "or raise N")
+    above = mag > 1.0
+    idx = np.flatnonzero(above[:-1] & ~above[1:])
+    if idx.size == 0:
+        raise ValueError(
+            f"|G| does not fall through 1 between {f_lo:.3g} and "
+            f"{f_hi:.3g} Hz: no crossover to report. Check the gain "
+            "(icp*kvco/N) and the filter values, or lower f_lo")
+    i = int(idx[-1])
+    fc = brentq(lambda x: abs(gain(x)) - 1.0, f[i], f[i + 1],
+                xtol=1e-13 * f[i], rtol=1e-15, maxiter=200)
+    pm = 180.0 + float(np.degrees(np.angle(gain(fc))))
+    if pm > 180.0:
+        pm -= 360.0
+    # phase crossover: G real and negative, the first one at or above
+    # fc.  The scan starts AT fc (then the grid points above it), so
+    # the stretch between fc and the next grid point is not skipped.
+    # An imaginary part below 1e-9 |G| counts as zero, so rounding
+    # cannot fake a sign change; a filter with no resistor has G real
+    # and negative everywhere, so its phase crossover is fc itself and
+    # its gain margin 0 dB (the loop is marginal).
+    fs = np.concatenate(([fc], f[i + 1:]))
+    gs = np.concatenate(([gain(fc)], g[i + 1:]))
+    im = np.where(np.abs(gs.imag) <= 1e-9 * np.abs(gs), 0.0, gs.imag)
+    f_pc = np.nan
+    for j in range(fs.size - 1):
+        if im[j] == 0.0 and gs.real[j] < 0.0:
+            f_pc = float(fs[j])
+            break
+        if im[j] * im[j + 1] < 0.0:
+            r = brentq(lambda x: gain(x).imag, fs[j], fs[j + 1],
+                       xtol=1e-13 * fs[j], rtol=1e-15, maxiter=200)
+            if gain(r).real < 0.0:
+                f_pc = float(r)
+                break
+    if np.isnan(f_pc) and gs.real[-1] < 0.0:
+        f_pc = f_hi                        # G(z = -1) is real
+    gm_db = np.inf if np.isnan(f_pc) else \
+        float(-20.0 * np.log10(abs(gain(f_pc))))
+    st = sampled_stability(*args)
+    return {"f_crossover_hz": float(fc), "phase_margin_deg": float(pm),
+            "f_phase_crossover_hz": f_pc, "gain_margin_db": gm_db,
+            "stable": st["stable"],
+            "spectral_radius": st["spectral_radius"]}
 
 
 def continuous_closed_loop_poles(icp, kvco_hz_per_v, n_div, c_shunt,

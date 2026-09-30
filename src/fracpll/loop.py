@@ -101,6 +101,8 @@ def stability(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz,
         raise ValueError("f_ref_hz must be finite and positive")
     f_lo = f_ref * 1e-6 if f_lo is None else float(f_lo)
     f_hi = f_ref * 0.5 if f_hi is None else float(f_hi)
+    if not (np.isfinite(f_lo) and np.isfinite(f_hi) and 0.0 < f_lo < f_hi):
+        raise ValueError("need 0 < f_lo < f_hi for the scanned band")
     f = np.geomspace(f_lo, f_hi, int(n_grid))
     w = 2.0 * np.pi * f
     mag = np.abs(open_loop(w, icp, kvco_hz_per_v, n_div, zfilter))

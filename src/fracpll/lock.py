@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.integrate import solve_ivp
+from scipy.optimize import brentq
 
 __all__ = ["static_offset", "lock_transient"]
 
@@ -77,25 +78,41 @@ def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
     curve : a `fracpll.tuning.TuningCurve` (the measured oscillator).
     n_div : division ratio (the lock target is f_vco = N f_ref).
     f_ref_hz, icp : reference frequency (Hz) and pump current (A).
-    c_shunt, branches : the loop filter of `fracpll.filters`.
+    c_shunt, branches : the loop filter of `fracpll.filters` (every
+        branch needs R > 0; an R = 0 branch belongs in c_shunt).
     i_leak, mismatch : pump non-idealities (A and fractional).
-    vc0 : starting control voltage (default: low edge of the measured
-        range, the precharge-low start of the study).
-    t_end : integration time (default: 400 reference-scaled loop
-        time constants, coarse but sufficient for the tests).
+    vc0 : starting control voltage (V), inside the measured range
+        (default: its low edge, the precharge-low start of the study).
+    phi0 : starting phase error (reference radians).
+    t_end : integration time in seconds (default 1e5 N / (2 pi f_ref),
+        about 32 ms for N = 100 at 50 MHz -- long, so that the
+        `locked` test below sees a settled tail).
+    n_eval : number of equally spaced output samples over [0, t_end].
+    settle_tol_rad : the settling band around the static offset
+        (reference radians).
 
-    Returns dict(t, phi_e, vc, locked, t_settle, phi_static) where
+    Returns dict(t, phi_e, vc, locked, t_settle, phi_static).
     `locked` requires the phase error to stay within settle_tol_rad of
-    the closed-form static offset over the trailing 20 % of the run.
+    the closed-form static offset over the trailing 20 % of the output
+    samples.  `t_settle` is the last time the phase error is outside
+    that band, located on the integrator's continuous solution by root
+    finding (so it does not depend on n_eval; before 0.4.0 it was
+    rounded UP to the next output sample); None when not locked, 0.0
+    when the run starts inside the band and never leaves it.
 
     Refuses when the lock target frequency lies outside the measured
     tuning range: the oscillator cannot reach it, and integrating
     longer will not change that.  Also refuses a negative-Kvco curve,
     which this averaged model does not handle (use `simulate_pll` with
-    pump_polarity=-1).
+    pump_polarity=-1), a start voltage outside the measured range (the
+    curve does not extrapolate), and non-physical filter values.
     """
     f_ref = float(f_ref_hz)
     n_div = float(n_div)
+    if not (np.isfinite(f_ref) and f_ref > 0.0):
+        raise ValueError("f_ref_hz must be finite and positive")
+    if not (np.isfinite(n_div) and n_div >= 1.0):
+        raise ValueError("n_div must be finite and >= 1")
     f_target = n_div * f_ref
     f_lo = float(min(curve.f_hz[0], curve.f_hz[-1]))
     f_hi = float(max(curve.f_hz[0], curve.f_hz[-1]))
@@ -112,10 +129,31 @@ def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
     phi_ss = static_offset(icp, i_leak, mismatch)
 
     icp = float(icp)
-    br = [(float(r), float(c)) for (r, c) in branches]
     c_sh = float(c_shunt)
+    if not (np.isfinite(c_sh) and c_sh > 0.0):
+        raise ValueError("c_shunt must be finite and positive")
+    br = [(float(r), float(c)) for (r, c) in branches]
+    for r, c in br:
+        if not (np.isfinite(r) and r > 0.0):
+            raise ValueError("zero-resistance branches: lump the "
+                             "capacitor into c_shunt instead (an R=0 "
+                             "branch is the same node); R must be "
+                             "finite and > 0")
+        if not (np.isfinite(c) and c > 0.0):
+            raise ValueError("branch capacitors must be finite and > 0")
     v_lo, v_hi = float(curve.vc[0]), float(curve.vc[-1])
     vc0 = v_lo if vc0 is None else float(vc0)
+    if not (v_lo - 1e-12 <= vc0 <= v_hi + 1e-12):
+        raise ValueError(
+            f"vc0 = {vc0:.4g} V lies outside the measured range "
+            f"[{v_lo:.4g}, {v_hi:.4g}] V of the tuning curve, which "
+            "does not extrapolate")
+    tol = float(settle_tol_rad)
+    if not (np.isfinite(tol) and tol > 0.0):
+        raise ValueError("settle_tol_rad must be finite and positive")
+    n_eval = int(n_eval)
+    if n_eval < 2:
+        raise ValueError("n_eval must be >= 2")
 
     # states: [phi_e, v_shunt, v_c(branch capacitors)...]
     def rhs(t, y):
@@ -128,10 +166,7 @@ def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
         dvcap = np.empty_like(vcap)
         i_br = 0.0
         for k, (r, c) in enumerate(br):
-            if r > 0.0:
-                ib = (vsh - vcap[k]) / r
-            else:
-                ib = 0.0  # handled by lumping below
+            ib = (vsh - vcap[k]) / r
             dvcap[k] = ib / c
             i_br += ib
         dvsh = (i - i_br) / c_sh
@@ -139,30 +174,52 @@ def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
         dphi = 2.0 * np.pi * (f_ref - f_v / n_div)
         return np.concatenate(([dphi, dvsh], dvcap))
 
-    for r, c in br:
-        if r <= 0.0:
-            raise ValueError("zero-resistance branches: lump the "
-                             "capacitor into c_shunt instead (an R=0 "
-                             "branch is the same node)")
-
     if t_end is None:
         t_end = 2000.0 / (2.0 * np.pi * f_ref) * n_div * 50.0
+    t_end = float(t_end)
+    if not (np.isfinite(t_end) and t_end > 0.0):
+        raise ValueError("t_end must be finite and positive")
     y0 = np.concatenate(([float(phi0), vc0],
                          np.full(len(br), vc0)))
-    t_eval = np.linspace(0.0, float(t_end), int(n_eval))
-    sol = solve_ivp(rhs, (0.0, float(t_end)), y0, method="LSODA",
-                    t_eval=t_eval, rtol=1e-8, atol=1e-10)
+    t_eval = np.linspace(0.0, t_end, n_eval)
+    sol = solve_ivp(rhs, (0.0, t_end), y0, method="LSODA",
+                    t_eval=t_eval, rtol=1e-8, atol=1e-10,
+                    dense_output=True)
     if not sol.success:
         raise RuntimeError(f"integration failed: {sol.message}")
     phi = sol.y[0]
     vc = np.clip(sol.y[1], v_lo, v_hi)
     tail = slice(int(0.8 * phi.size), None)
-    locked = bool(np.all(np.abs(phi[tail] - phi_ss)
-                         < float(settle_tol_rad)))
+    locked = bool(np.all(np.abs(phi[tail] - phi_ss) < tol))
     t_settle = None
     if locked:
-        off = np.abs(phi - phi_ss) >= float(settle_tol_rad)
-        idx = np.flatnonzero(off)
-        t_settle = float(sol.t[idx[-1] + 1]) if idx.size else 0.0
+        t_settle = _last_exit(sol.sol, phi_ss, tol, t_eval)
     return {"t": sol.t, "phi_e": phi, "vc": vc, "locked": locked,
             "t_settle": t_settle, "phi_static": phi_ss}
+
+
+def _last_exit(dense, phi_ss, tol, t_eval):
+    """Last time |phi(t) - phi_ss| >= tol on the continuous solution.
+
+    Samples the solver's interpolant at its own step boundaries, at 8
+    evenly spaced points inside every step, and at the output samples,
+    takes the last sample outside the band, and refines the exit by
+    Brent's method on the interpolant.  (An excursion out of the band
+    shorter than about 1/9 of one solver step, falling between those
+    samples, would not be seen; the solver keeps its steps short
+    wherever the solution changes quickly.)"""
+    ts = np.asarray(dense.ts, dtype=float)
+    inner = (ts[:-1, None]
+             + np.diff(ts)[:, None] * np.arange(1, 9)[None, :] / 9.0)
+    grid = np.unique(np.concatenate((ts, inner.ravel(), t_eval)))
+    g = np.abs(dense(grid)[0] - phi_ss) - tol
+    out = np.flatnonzero(g >= 0.0)
+    if out.size == 0:
+        return 0.0
+    i = int(out[-1])
+    if i + 1 >= grid.size:
+        return float(grid[-1])
+    a, b = grid[i], grid[i + 1]
+    fun = lambda t: abs(float(dense(t)[0]) - phi_ss) - tol
+    return float(brentq(fun, a, b, xtol=1e-15 * max(b, 1e-300),
+                        rtol=1e-12))

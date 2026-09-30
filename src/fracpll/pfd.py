@@ -44,12 +44,14 @@ def pfd_static_offset(f_ref_hz, icp, i_dn=None, i_leak=0.0,
     reference edge leads).  Leakage flows OUT of the control node.
     """
     f = float(f_ref_hz)
-    T = 1.0 / f
     iu = float(icp)
     idn = iu if i_dn is None else float(i_dn)
     il, tr, tdz = float(i_leak), float(t_reset), float(t_deadzone)
+    if not all(math.isfinite(v) for v in (f, iu, idn, il, tr, tdz)):
+        raise ValueError("all inputs must be finite")
     if f <= 0.0 or iu <= 0.0 or idn <= 0.0 or tr < 0.0 or tdz < 0.0:
         raise ValueError("need f_ref, currents > 0 and delays >= 0")
+    T = 1.0 / f
     base = iu * max(0.0, tr - tdz) - idn * max(0.0, tr - tdz)
     need = il * T  # charge the pump must deliver per period
     if need == base:

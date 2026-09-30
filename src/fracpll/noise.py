@@ -123,6 +123,23 @@ class NoiseSpec:
         db = np.interp(np.log10(f), self._logf, self._ldb)
         return dbc_to_psd(db)
 
+    def phase_variance(self, f_lo_hz, f_hi_hz):
+        """Integrated phase noise (rad^2) of this spec from f_lo to f_hi.
+
+        The exact integral of the spec's own interpolation (straight
+        lines on log-log axes between the measured points), with no
+        grid: each segment is a power law and is integrated in closed
+        form.  RMS jitter follows as sqrt(variance) / (2 pi f0).  Like
+        `psd`, it refuses limits outside the measured range.
+        """
+        lo, hi = float(f_lo_hz), float(f_hi_hz)
+        if not (np.isfinite(lo) and np.isfinite(hi) and 0.0 < lo < hi):
+            raise ValueError("need 0 < f_lo_hz < f_hi_hz")
+        fm = 10.0 ** self._logf
+        inner = fm[(fm > lo) & (fm < hi)]
+        nodes = np.concatenate(([lo], inner, [hi]))
+        return _loglog_integral(nodes, self.psd(nodes))
+
 
 def white_floor(dbc_per_hz, reference, f_lo_hz=1.0, f_hi_hz=1e9):
     """A flat noise floor from one measured number.
@@ -174,11 +191,36 @@ def synthesizer_psd(f_hz, lg, n_div, s_vco=None, s_inband=None,
     return out
 
 
-def rms_jitter(f_hz, s_out, f0_hz):
+def _loglog_integral(f, s):
+    """Exact integral of the curve that joins (f_i, s_i) by straight
+    lines on log-log axes (a power law s_i (f/f_i)^a_i per segment).
+
+    Segment i gives s_i f_i L (e^x - 1)/x with L = ln(f_(i+1)/f_i),
+    a_i = ln(s_(i+1)/s_i)/L and x = (a_i + 1) L; x -> 0 (a slope of
+    exactly -1) is the limit s_i f_i L, and expm1 keeps it accurate
+    near there.  Needs f > 0 and s > 0."""
+    L = np.log(f[1:] / f[:-1])
+    x = np.log((s[1:] * f[1:]) / (s[:-1] * f[:-1]))    # (a + 1) L
+    small = np.abs(x) < 1e-12
+    ratio = np.where(small, 1.0, np.expm1(x) / np.where(small, 1.0, x))
+    return float(np.sum(s[:-1] * f[:-1] * L * ratio))
+
+
+def rms_jitter(f_hz, s_out, f0_hz, method="trapezoid"):
     """RMS absolute jitter (s): sqrt(int S df) / (2 pi f0).
 
-    One-sided convention -- the integral is taken ONCE.  The tests
-    hold this against the closed forms for a flat and a 1/f^2 PSD.
+    One-sided convention -- the integral is taken ONCE.
+
+    method : how the PSD is integrated between the grid points.
+        "trapezoid" (the default, unchanged since 0.1.0) joins them by
+        straight lines on linear axes.  It is accurate on a dense grid
+        but overestimates a falling PSD given at a few points far
+        apart (for example at decade offsets).  "loglog" joins them by
+        straight lines on log-log axes -- a power law per segment, the
+        same rule `NoiseSpec` interpolates with -- and integrates that
+        exactly; it needs f > 0 and S > 0.  The tests hold the
+        trapezoid against the closed forms for a flat and a 1/f^2 PSD,
+        and "loglog" against the closed-form power-law integrals.
     """
     f = np.atleast_1d(np.asarray(f_hz, dtype=float))
     s = np.atleast_1d(np.asarray(s_out, dtype=float))
@@ -190,7 +232,16 @@ def rms_jitter(f_hz, s_out, f0_hz):
         raise ValueError("s_out must be >= 0 on the same grid as f")
     if not (np.isfinite(f0) and f0 > 0.0):
         raise ValueError("f0_hz must be finite and positive")
-    var = _trapezoid(s, f)
+    if method == "trapezoid":
+        var = _trapezoid(s, f)
+    elif method == "loglog":
+        if f[0] <= 0.0 or np.any(s <= 0.0) or not np.all(np.isfinite(s)):
+            raise ValueError("method='loglog' needs positive offsets and "
+                             "a positive, finite PSD at every point (a "
+                             "power law cannot pass through zero)")
+        var = _loglog_integral(f, s)
+    else:
+        raise ValueError("method must be 'trapezoid' or 'loglog'")
     return float(np.sqrt(var) / (2.0 * np.pi * f0))
 
 
