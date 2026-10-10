@@ -57,7 +57,10 @@ and Kwasniewski, IEEE J. Solid-State Circuits 28, 553 (1993).
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["mash_sequence", "dsm_phase_psd", "MASH_RANGE",
            "mash_period", "mash_line_spectrum"]
@@ -66,7 +69,7 @@ __all__ = ["mash_sequence", "dsm_phase_psd", "MASH_RANGE",
 MASH_RANGE = {1: (0, 1), 2: (-1, 2), 3: (-3, 4)}
 
 
-def mash_sequence(num, den, m, n_steps):
+def mash_sequence(num: int, den: int, m: int, n_steps: int) -> np.ndarray:
     """Integer division offsets d[k] of a MASH-m cascade.
 
     num, den : the fraction num/den in [0, 1), integers, den >= 2.
@@ -102,7 +105,7 @@ def mash_sequence(num, den, m, n_steps):
     return y
 
 
-def dsm_phase_psd(f_hz, f_ref_hz, m):
+def dsm_phase_psd(f_hz: ArrayLike, f_ref_hz: float, m: int) -> np.ndarray:
     """One-sided divider phase-noise PSD (rad^2/Hz) of a MASH-m.
 
     Valid for m = 2 or 3.  m = 1 is refused: a first-order accumulator
@@ -156,7 +159,8 @@ def _mash_state_step(acc, num, den):
     return out
 
 
-def mash_period(num, den, m, max_period=1 << 22):
+def mash_period(num: int, den: int, m: int,
+                max_period: int = 1 << 22) -> int:
     """Exact period of the MASH-m state from the zero state.
 
     The state map is a bijection on a finite set, so the orbit of zero
@@ -175,7 +179,8 @@ def mash_period(num, den, m, max_period=1 << 22):
                      "dsm_phase_psd (continuum model) for long periods")
 
 
-def mash_line_spectrum(num, den, m, f_ref_hz, max_period=1 << 22):
+def mash_line_spectrum(num: int, den: int, m: int, f_ref_hz: float,
+                       max_period: int = 1 << 22) -> dict[str, Any]:
     """Exact line spectrum of the MASH-m divider phase error.
 
     The phase is 2 pi sum_(j<k) (d_j - num/den), in OSCILLATOR radians

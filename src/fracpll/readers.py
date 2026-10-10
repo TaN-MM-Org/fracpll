@@ -31,7 +31,7 @@ import os
 import numpy as np
 
 from .noise import NoiseSpec
-from .tuning import fit_tuning
+from .tuning import TuningCurve, fit_tuning
 
 __all__ = ["read_noise_csv", "read_tuning_csv"]
 
@@ -91,8 +91,10 @@ def _read_xy(path, columns, delimiter):
     return x, np.array(ys)
 
 
-def read_noise_csv(path, reference, columns=(0, 1), delimiter=None,
-                   f_scale=1.0, label=None):
+def read_noise_csv(path: str | os.PathLike, reference: str,
+                   columns: tuple[int, int] = (0, 1),
+                   delimiter: str | None = None, f_scale: float = 1.0,
+                   label: str | None = None) -> NoiseSpec:
     """A `NoiseSpec` from a text file of (offset, dBc/Hz) rows.
 
     path : the file.  reference : where the measurement comes from
@@ -116,8 +118,10 @@ def read_noise_csv(path, reference, columns=(0, 1), delimiter=None,
                      if label is None else label)
 
 
-def read_tuning_csv(path, reference, columns=(0, 1), delimiter=None,
-                    f_scale=1.0, label=None):
+def read_tuning_csv(path: str | os.PathLike, reference: str,
+                    columns: tuple[int, int] = (0, 1),
+                    delimiter: str | None = None, f_scale: float = 1.0,
+                    label: str | None = None) -> TuningCurve:
     """A fitted `TuningCurve` from a text file of (V, frequency) rows.
 
     Same reading rules as `read_noise_csv`; f_scale multiplies the

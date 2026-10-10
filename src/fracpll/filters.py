@@ -25,7 +25,10 @@ elements as constant over one analysis.
 """
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["loop_filter_impedance", "second_order_impedance"]
 
@@ -39,7 +42,9 @@ def _check_w(w):
     return w
 
 
-def loop_filter_impedance(w, c_shunt, branches=()):
+def loop_filter_impedance(w: ArrayLike, c_shunt: float,
+                          branches: Sequence[tuple[float, float]] = ()
+                          ) -> np.ndarray:
     """Impedance of a shunt capacitor with series R-C branches.
 
     w : angular frequency array (rad/s), positive.
@@ -67,7 +72,8 @@ def loop_filter_impedance(w, c_shunt, branches=()):
     return 1.0 / y
 
 
-def second_order_impedance(w, c1, r2, c2):
+def second_order_impedance(w: ArrayLike, c1: float, r2: float,
+                           c2: float) -> np.ndarray:
     """The textbook closed form of the classic second-order filter.
 
     C1 to ground in parallel with a series R2-C2 branch:

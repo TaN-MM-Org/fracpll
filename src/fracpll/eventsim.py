@@ -72,12 +72,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 
 from ._network import FilterModes
 from .mash import mash_sequence
+
+if TYPE_CHECKING:                      # for the type hints only
+    from .tuning import TuningCurve
 
 __all__ = ["LinearVCO", "SimResult", "simulate_pll"]
 
@@ -102,7 +107,7 @@ class LinearVCO:
                 self.kvco_hz_per_v) or self.kvco_hz_per_v == 0.0:
             raise ValueError("f0_hz must be finite and kvco nonzero")
 
-    def frequency(self, vc):
+    def frequency(self, vc: ArrayLike) -> np.ndarray:
         """f0 + Kvco * Vc, in Hz, for control voltage vc (V)."""
         return self.f0_hz + self.kvco_hz_per_v * np.asarray(vc)
 
@@ -125,7 +130,7 @@ class SimResult:
     _div_frame: np.ndarray = None   # times (absolute floats lose
     _div_rel: np.ndarray = None     # resolution on long runs)
 
-    def time_error(self):
+    def time_error(self) -> np.ndarray:
         """t_div[k] - t_ref[k] (s) over the common edges, at full
         precision (computed from frame index and in-frame time).
 
@@ -136,7 +141,7 @@ class SimResult:
         return ((self._div_frame[:n] - self._ref_frame[:n]) * T
                 + (self._div_rel[:n] - self._ref_rel[:n]))
 
-    def nearest_edge_error(self):
+    def nearest_edge_error(self) -> np.ndarray:
         """Each divider edge minus the NEAREST reference edge (s).
 
         Insensitive to cycle slips: once locked it is the static
@@ -150,7 +155,7 @@ class SimResult:
                         left, right)
         return td - pick
 
-    def phase_rad(self):
+    def phase_rad(self) -> np.ndarray:
         """Oscillator excess phase at the reference edges (rad)."""
         return 2.0 * np.pi * self.psi_ref
 
@@ -164,11 +169,16 @@ def _gl(n):
     return _GL_CACHE[n]
 
 
-def simulate_pll(vco, n_int, f_ref_hz, icp, c_shunt, branches=(),
-                 n_cycles=1000, num=0, den=2, mash_order=0,
-                 i_dn=None, i_leak=0.0, t_reset=0.0, t_deadzone=0.0,
-                 pump_polarity=1, vc0=None, phase0_cycles=0.0,
-                 ref_jitter_s=None, quad_nodes=16):
+def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
+                 f_ref_hz: float, icp: float, c_shunt: float,
+                 branches: Sequence[tuple[float, float]] = (),
+                 n_cycles: int = 1000, num: int = 0, den: int = 2,
+                 mash_order: int = 0, i_dn: float | None = None,
+                 i_leak: float = 0.0, t_reset: float = 0.0,
+                 t_deadzone: float = 0.0, pump_polarity: int = 1,
+                 vc0: float | None = None, phase0_cycles: float = 0.0,
+                 ref_jitter_s: ArrayLike | None = None,
+                 quad_nodes: int = 16) -> SimResult:
     """Run the loop edge by edge for n_cycles reference periods.
 
     vco : `LinearVCO` (exact phase) or a `TuningCurve` (measured,
@@ -185,25 +195,49 @@ def simulate_pll(vco, n_int, f_ref_hz, icp, c_shunt, branches=(),
         of a LinearVCO; required for a measured curve).
     phase0_cycles : starting oscillator phase lead, in cycles.
     ref_jitter_s : optional array of per-edge reference time offsets.
+
+    The divider count N + d_k of every divider edge must be at least 1
+    (an oscillator cycle); a MASH pattern that asks for less (for
+    example N = 2 with a third-order MASH, whose offsets can reach -3) is
+    refused.  The pattern is generated for as many divider edges as
+    the run makes, also when a pull-in from above makes more divider
+    edges than reference edges.
     """
     f_ref = float(f_ref_hz)
+    if not (math.isfinite(f_ref) and f_ref > 0.0):
+        raise ValueError(f"f_ref_hz must be finite and positive, got "
+                         f"{f_ref_hz!r}")
     T = 1.0 / f_ref
     n_int = int(n_int)
     num, den, m = int(num), int(den), int(mash_order)
-    if n_int < 1 or f_ref <= 0.0:
-        raise ValueError("need n_int >= 1 and f_ref > 0")
+    if n_int < 1:
+        raise ValueError(f"n_int must be >= 1, got {n_int}")
     if m == 0 and num != 0:
         raise ValueError("a fractional part needs mash_order 1, 2 or 3")
     icp = float(icp)
     i_dn = icp if i_dn is None else float(i_dn)
-    if icp <= 0.0 or i_dn <= 0.0:
-        raise ValueError("pump currents must be positive")
+    if not (math.isfinite(icp) and math.isfinite(i_dn)
+            and icp > 0.0 and i_dn > 0.0):
+        raise ValueError("pump currents icp and i_dn must be finite and "
+                         f"positive, got icp={icp!r}, i_dn={i_dn!r}")
+    i_leak = float(i_leak)
+    if not math.isfinite(i_leak):
+        raise ValueError(f"i_leak must be finite, got {i_leak!r}")
     pol = int(pump_polarity)
     if pol not in (1, -1):
         raise ValueError("pump_polarity must be +1 or -1")
     t_reset, t_dz = float(t_reset), float(t_deadzone)
-    if t_reset < 0.0 or t_dz < 0.0:
-        raise ValueError("delays must be >= 0")
+    if not (math.isfinite(t_reset) and math.isfinite(t_dz)
+            and t_reset >= 0.0 and t_dz >= 0.0):
+        raise ValueError("delays t_reset and t_deadzone must be finite "
+                         f"and >= 0, got {t_reset!r} and {t_dz!r}")
+    phase0 = float(phase0_cycles)
+    if not math.isfinite(phase0):
+        raise ValueError(f"phase0_cycles must be finite, got {phase0!r}")
+    if vc0 is not None and not math.isfinite(float(vc0)):
+        raise ValueError(f"vc0 must be finite, got {vc0!r}")
+    if int(quad_nodes) < 1:
+        raise ValueError(f"quad_nodes must be >= 1, got {quad_nodes!r}")
     n_cycles = int(n_cycles)
 
     fm = FilterModes(c_shunt, branches)
@@ -229,16 +263,33 @@ def simulate_pll(vco, n_int, f_ref_hz, icp, c_shunt, branches=(),
                 "feedback: use pump_polarity=-1 for this oscillator")
         gx, gw = _gl(int(quad_nodes))
 
-    if m:
-        d = mash_sequence(num, den, m, n_cycles + 8)
-    else:
-        d = np.zeros(n_cycles + 8, dtype=np.int64)
+    def pattern(length):
+        # the whole pattern from the zero state: a longer one starts
+        # with exactly the same values, so it can be regrown at will
+        if m:
+            seq = mash_sequence(num, den, m, length)
+        else:
+            seq = np.zeros(length, dtype=np.int64)
+        k_low = int(np.argmin(seq))
+        if n_int + int(seq[k_low]) < 1:
+            raise ValueError(
+                f"divider count N + d = {n_int + int(seq[k_low])} at "
+                f"divider edge {k_low}: the MASH-{m} pattern asks the "
+                f"divider for fewer than one oscillator cycle (its "
+                f"offsets reach {int(seq[k_low])}; MASH_RANGE gives the "
+                "full range of each order). Raise n_int, or use a "
+                "lower MASH order")
+        return seq
+
+    d = pattern(n_cycles + 8)
 
     jit = None
     if ref_jitter_s is not None:
         jit = np.asarray(ref_jitter_s, dtype=float)
         if jit.size < n_cycles + 1:
             raise ValueError("ref_jitter_s needs >= n_cycles + 1 entries")
+        if not np.all(np.isfinite(jit[:n_cycles + 1])):
+            raise ValueError("ref_jitter_s must be finite")
 
     # oscillator phase increment over [0, dt] from modal state w, current i
     def inc(w, i, dt):
@@ -253,7 +304,7 @@ def simulate_pll(vco, n_int, f_ref_hz, icp, c_shunt, branches=(),
     # --- state -------------------------------------------------------
     w = fm.modal_from_voltages([vc0] * fm.n)   # branches at equilibrium
     t = 0.0
-    theta = float(phase0_cycles)   # cycles since the last divider target
+    theta = phase0                 # cycles since the last divider target
     count = 0                      # cycles completed at divider edges
     j = 0                          # divider edge index
     target = n_int + int(d[0])
@@ -338,7 +389,12 @@ def simulate_pll(vco, n_int, f_ref_hz, icp, c_shunt, branches=(),
             dr_l.append(t)
             cnt_l.append(target)
             j += 1
-            target = n_int + int(d[j]) if j < d.size else n_int
+            if j >= d.size:
+                # more divider edges than planned (a pull-in from
+                # above slips cycles): extend the same pattern.  Before
+                # 0.5.0 the count fell back to the integer N here.
+                d = pattern(2 * d.size)
+            target = n_int + int(d[j])
             set_dn(t)
             if t_rst_at is not None and t_rst_at <= t:
                 do_reset()

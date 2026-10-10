@@ -26,13 +26,17 @@ by edge.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["open_loop", "error_transfer", "lowpass_transfer",
            "stability"]
 
 
-def open_loop(w, icp, kvco_hz_per_v, n_div, zfilter):
+def open_loop(w: ArrayLike, icp: float, kvco_hz_per_v: float, n_div: float,
+              zfilter: Callable[[np.ndarray], ArrayLike]) -> np.ndarray:
     """Open-loop gain L(jw).
 
     w : angular frequencies (rad/s), positive.
@@ -69,12 +73,12 @@ def open_loop(w, icp, kvco_hz_per_v, n_div, zfilter):
     return icp * kv * z / (1j * w * n_div)
 
 
-def error_transfer(lg):
+def error_transfer(lg: ArrayLike) -> np.ndarray:
     """VCO-noise (high-pass) transfer 1/(1+L)."""
     return 1.0 / (1.0 + np.asarray(lg, dtype=complex))
 
 
-def lowpass_transfer(lg):
+def lowpass_transfer(lg: ArrayLike) -> np.ndarray:
     """Input-referred (low-pass) transfer L/(1+L).
 
     The two transfers sum to one exactly; the tests hold that
@@ -83,8 +87,10 @@ def lowpass_transfer(lg):
     return lg / (1.0 + lg)
 
 
-def stability(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz,
-              f_lo=None, f_hi=None, n_grid=4001):
+def stability(icp: float, kvco_hz_per_v: float, n_div: float,
+              zfilter: Callable[[np.ndarray], ArrayLike], f_ref_hz: float,
+              f_lo: float | None = None, f_hi: float | None = None,
+              n_grid: int = 4001) -> dict[str, float]:
     """Crossover frequency and phase margin, with refusals.
 
     Scans |L| on a log grid from f_lo to f_hi (defaults: f_ref/1e6 to
@@ -103,6 +109,8 @@ def stability(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz,
     f_hi = f_ref * 0.5 if f_hi is None else float(f_hi)
     if not (np.isfinite(f_lo) and np.isfinite(f_hi) and 0.0 < f_lo < f_hi):
         raise ValueError("need 0 < f_lo < f_hi for the scanned band")
+    if int(n_grid) < 2:
+        raise ValueError(f"n_grid must be >= 2, got {n_grid!r}")
     f = np.geomspace(f_lo, f_hi, int(n_grid))
     w = 2.0 * np.pi * f
     mag = np.abs(open_loop(w, icp, kvco_hz_per_v, n_div, zfilter))

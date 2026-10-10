@@ -23,15 +23,17 @@ than planned -- the plan errs on the safe (conservative) side.
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 __all__ = ["jitter_relative_sigma", "averages_for_jitter"]
 
 
 def _weights(f):
     f = np.asarray(f, dtype=float)
-    if f.size < 3 or np.any(np.diff(f) <= 0.0):
-        raise ValueError("need an increasing offset grid with >= 3 "
-                         "points")
+    if f.ndim != 1 or f.size < 3 or not np.all(np.isfinite(f)) \
+            or np.any(np.diff(f) <= 0.0):
+        raise ValueError("need a finite, strictly increasing offset grid "
+                         "with >= 3 points")
     w = np.empty_like(f)
     w[0] = 0.5 * (f[1] - f[0])
     w[-1] = 0.5 * (f[-1] - f[-2])
@@ -39,7 +41,8 @@ def _weights(f):
     return w
 
 
-def jitter_relative_sigma(f_hz, s_out, n_avg):
+def jitter_relative_sigma(f_hz: ArrayLike, s_out: ArrayLike,
+                          n_avg: int) -> float:
     """Predicted relative 1-sigma of the RMS-jitter estimate.
 
     f_hz : offset grid (Hz), increasing; each point is one analyzer
@@ -50,11 +53,13 @@ def jitter_relative_sigma(f_hz, s_out, n_avg):
     """
     n = int(n_avg)
     if n < 1:
-        raise ValueError("n_avg must be >= 1")
+        raise ValueError(f"n_avg must be >= 1, got {n_avg!r}")
     s = np.asarray(s_out, dtype=float)
     w = _weights(f_hz)
-    if s.shape != w.shape or np.any(s < 0.0):
-        raise ValueError("s_out must be >= 0 on the same grid as f")
+    if s.shape != w.shape or np.any(s < 0.0) \
+            or not np.all(np.isfinite(s)):
+        raise ValueError("s_out must be finite and >= 0 on the same "
+                         "grid as f")
     num = np.sqrt(np.sum((w * s) ** 2))
     den = np.sum(w * s)
     if den <= 0.0:
@@ -63,16 +68,31 @@ def jitter_relative_sigma(f_hz, s_out, n_avg):
     return float(0.5 * num / den / np.sqrt(n))
 
 
-def averages_for_jitter(target_rel_sigma, f_hz, s_out):
+def averages_for_jitter(target_rel_sigma: float, f_hz: ArrayLike,
+                        s_out: ArrayLike) -> tuple[int, float]:
     """Averages needed for a target relative jitter error bar.
 
     Exact inversion of `jitter_relative_sigma` (1/sqrt(n) law):
     returns (n, achieved) with achieved <= target and n-1 failing it,
-    which the tests verify on both sides.
+    which the tests verify on both sides.  The estimate
+    ceil((sigma_1/target)^2) is checked against `jitter_relative_sigma`
+    itself and moved by one where rounding put it on the wrong side
+    (before 0.5.0 a target equal to the error bar of exactly n
+    averages could return n + 1).
     """
     tgt = float(target_rel_sigma)
     if not (np.isfinite(tgt) and tgt > 0.0):
-        raise ValueError("target_rel_sigma must be positive")
+        raise ValueError("target_rel_sigma must be finite and positive, "
+                         f"got {target_rel_sigma!r}")
     one = jitter_relative_sigma(f_hz, s_out, 1)
-    n = int(np.ceil((one / tgt) ** 2))
+    est = (one / tgt) ** 2
+    if not est < 1e15:
+        raise ValueError(
+            f"target_rel_sigma = {tgt:.3g} needs about {est:.3g} "
+            "averages, more than any measurement can make")
+    n = max(1, int(np.ceil(est)))
+    while n > 1 and jitter_relative_sigma(f_hz, s_out, n - 1) <= tgt:
+        n -= 1
+    while jitter_relative_sigma(f_hz, s_out, n) > tgt:
+        n += 1
     return n, jitter_relative_sigma(f_hz, s_out, n)

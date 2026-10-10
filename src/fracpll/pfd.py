@@ -35,8 +35,9 @@ import math
 __all__ = ["pfd_static_offset"]
 
 
-def pfd_static_offset(f_ref_hz, icp, i_dn=None, i_leak=0.0,
-                      t_reset=0.0, t_deadzone=0.0):
+def pfd_static_offset(f_ref_hz: float, icp: float, i_dn: float | None = None,
+                      i_leak: float = 0.0, t_reset: float = 0.0,
+                      t_deadzone: float = 0.0) -> dict[str, float]:
     """Exact steady-state divider-minus-reference time offset.
 
     Returns dict(dt_s, phase_ref_rad) with phase_ref_rad = 2 pi dt f_ref,

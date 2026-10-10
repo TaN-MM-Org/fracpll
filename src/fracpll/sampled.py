@@ -52,7 +52,10 @@ and belong to the event-driven simulator.
 """
 from __future__ import annotations
 
+from typing import Any, Sequence
+
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.linalg import expm
 from scipy.optimize import brentq
 
@@ -64,8 +67,19 @@ __all__ = ["sampled_loop_map", "sampled_stability",
            "pulse_doublet_vector"]
 
 
-def sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
-                     branches=(), pump_polarity=1):
+def _check_loop(icp, kv, nd, f_ref):
+    if not all(np.isfinite(v) for v in (icp, kv, nd, f_ref)) \
+            or icp <= 0.0 or nd < 1.0 or f_ref <= 0.0 or kv == 0.0:
+        raise ValueError(
+            "need finite values with icp > 0, n_div >= 1, f_ref > 0 and "
+            f"kvco != 0; got icp={icp!r}, n_div={nd!r}, f_ref={f_ref!r}, "
+            f"kvco={kv!r}")
+
+
+def sampled_loop_map(icp: float, kvco_hz_per_v: float, n_div: float,
+                     f_ref_hz: float, c_shunt: float,
+                     branches: Sequence[tuple[float, float]] = (),
+                     pump_polarity: int = 1) -> dict[str, np.ndarray]:
     """The one-period map s_{k+1} = F s_k, s = [x..., psi (cycles)].
 
     Returns dict(F, Phi, kick) with F = Phi @ kick.
@@ -73,8 +87,7 @@ def sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
     icp, kv = float(icp), float(kvco_hz_per_v)
     nd, f_ref = float(n_div), float(f_ref_hz)
     pol = int(pump_polarity)
-    if icp <= 0.0 or nd < 1.0 or f_ref <= 0.0 or kv == 0.0:
-        raise ValueError("need icp > 0, n_div >= 1, f_ref > 0, kvco != 0")
+    _check_loop(icp, kv, nd, f_ref)
     if pol not in (1, -1):
         raise ValueError("pump_polarity must be +1 or -1")
     if pol * kv < 0.0:
@@ -93,8 +106,10 @@ def sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
     return {"F": Phi @ kick, "Phi": Phi, "kick": kick}
 
 
-def sampled_stability(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
-                      branches=(), pump_polarity=1):
+def sampled_stability(icp: float, kvco_hz_per_v: float, n_div: float,
+                      f_ref_hz: float, c_shunt: float,
+                      branches: Sequence[tuple[float, float]] = (),
+                      pump_polarity: int = 1) -> dict[str, Any]:
     """Exact small-signal stability at ANY bandwidth.
 
     Returns dict(stable, spectral_radius, poles).  Stable means every
@@ -112,8 +127,10 @@ def sampled_stability(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
             "poles": z}
 
 
-def sampled_open_loop(f_hz, icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
-                      branches=(), pump_polarity=1):
+def sampled_open_loop(f_hz: ArrayLike, icp: float, kvco_hz_per_v: float,
+                      n_div: float, f_ref_hz: float, c_shunt: float,
+                      branches: Sequence[tuple[float, float]] = (),
+                      pump_polarity: int = 1) -> np.ndarray:
     """Exact per-cycle open-loop gain G(z) on the unit circle.
 
     Breaking the loop of `sampled_loop_map` at the phase detector, a
@@ -164,9 +181,11 @@ def sampled_open_loop(f_hz, icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
     return k * x[:, -1]
 
 
-def sampled_margins(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
-                    branches=(), pump_polarity=1, f_lo=None,
-                    n_grid=4001):
+def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
+                    f_ref_hz: float, c_shunt: float,
+                    branches: Sequence[tuple[float, float]] = (),
+                    pump_polarity: int = 1, f_lo: float | None = None,
+                    n_grid: int = 4001) -> dict[str, Any]:
     """Phase margin and gain margin of the exact per-cycle loop.
 
     Works at ANY loop bandwidth, including the fast loops that
@@ -270,8 +289,10 @@ def sampled_margins(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
             "spectral_radius": st["spectral_radius"]}
 
 
-def continuous_closed_loop_poles(icp, kvco_hz_per_v, n_div, c_shunt,
-                                 branches=()):
+def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
+                                 n_div: float, c_shunt: float,
+                                 branches: Sequence[tuple[float, float]] = ()
+                                 ) -> np.ndarray:
     """Roots of 1 + L(s) = 0 for the averaged model (rad/s).
 
     With Z = 1/Y and Y(s) = s C0 + sum_k s C_k / (1 + s R_k C_k),
@@ -300,7 +321,8 @@ def continuous_closed_loop_poles(icp, kvco_hz_per_v, n_div, c_shunt,
     return np.roots(char.coeffs)
 
 
-def pulse_doublet_vector(kvco_hz_per_v, c_shunt, branches=()):
+def pulse_doublet_vector(kvco_hz_per_v: float, c_shunt: float,
+                         branches: Sequence[tuple[float, float]] = ()) -> np.ndarray:
     """The second-order pulse-width correction direction, M B.
 
     A pump pulse is a RECTANGLE of charge q = pol Icp tau lasting |tau|
@@ -329,10 +351,14 @@ def pulse_doublet_vector(kvco_hz_per_v, c_shunt, branches=()):
     return M @ B
 
 
-def simulate_sampled(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
-                     branches=(), u_cycles=None, n_int=None, num=0,
-                     den=2, mash_order=0, n_cycles=None, order=2,
-                     pump_polarity=1):
+def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
+                     f_ref_hz: float, c_shunt: float,
+                     branches: Sequence[tuple[float, float]] = (),
+                     u_cycles: ArrayLike | None = None,
+                     n_int: int | None = None, num: int = 0, den: int = 2,
+                     mash_order: int = 0, n_cycles: int | None = None,
+                     order: int = 2,
+                     pump_polarity: int = 1) -> dict[str, np.ndarray]:
     """Fast per-cycle simulation of the charge-pump loop, to 1st or 2nd
     order in the PFD pulse width.
 
@@ -376,6 +402,9 @@ def simulate_sampled(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
     pol = int(pump_polarity)
     if int(order) not in (1, 2):
         raise ValueError("order must be 1 or 2")
+    _check_loop(icp, kv, nd, f_ref)
+    if pol not in (1, -1):
+        raise ValueError("pump_polarity must be +1 or -1")
     if pol * kv <= 0.0:
         raise ValueError("pump polarity and Kvco sign must give negative "
                          "feedback (pump_polarity=-1 for negative Kvco)")

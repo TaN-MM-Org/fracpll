@@ -42,14 +42,19 @@ zone, cycle-slip granularity, reset overlap) is below its resolution
 """
 from __future__ import annotations
 
+from typing import Any, Sequence
+
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import brentq
 
+from .tuning import TuningCurve
+
 __all__ = ["static_offset", "lock_transient"]
 
 
-def static_offset(icp, i_leak=0.0, mismatch=0.0):
+def static_offset(icp: float, i_leak: float = 0.0,
+                  mismatch: float = 0.0) -> float:
     """Closed-form static phase offset (rad) at lock.
 
     icp : pump current (A); i_leak : leakage current (A);
@@ -70,9 +75,13 @@ def static_offset(icp, i_leak=0.0, mismatch=0.0):
     return float(2.0 * np.pi * np.arctanh(rho))
 
 
-def lock_transient(curve, n_div, f_ref_hz, icp, c_shunt, branches=(),
-                   i_leak=0.0, mismatch=0.0, vc0=None, phi0=0.0,
-                   t_end=None, n_eval=2000, settle_tol_rad=0.05):
+def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
+                   icp: float, c_shunt: float,
+                   branches: Sequence[tuple[float, float]] = (),
+                   i_leak: float = 0.0, mismatch: float = 0.0,
+                   vc0: float | None = None, phi0: float = 0.0,
+                   t_end: float | None = None, n_eval: int = 2000,
+                   settle_tol_rad: float = 0.05) -> dict[str, Any]:
     """Integrate the averaged loop from a cold start.
 
     curve : a `fracpll.tuning.TuningCurve` (the measured oscillator).

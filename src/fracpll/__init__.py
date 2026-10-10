@@ -15,7 +15,12 @@ gain with phase and gain margins at any bandwidth
 measured phase noise (`rms_jitter(method="loglog")`,
 `NoiseSpec.phase_variance`), readers for measured data files
 (`read_noise_csv`, `read_tuning_csv`), and a lock settling time that
-no longer depends on the output sampling.
+no longer depends on the output sampling.  Version 0.5 adds a
+straight-line Kvco fit of measured tuning points with its standard
+uncertainty and a test of the line (`fit_linear_vco`), and the
+propagation of measured input uncertainties (pump current, Kvco,
+filter parts) to the loop bandwidth and margins
+(`margin_uncertainty`).
 """
 
 from .filters import loop_filter_impedance, second_order_impedance
@@ -33,9 +38,10 @@ from .sampled import (continuous_closed_loop_poles, pulse_doublet_vector,
                       sampled_stability, simulate_sampled)
 from .plan import averages_for_jitter, jitter_relative_sigma
 from .readers import read_noise_csv, read_tuning_csv
-from .tuning import TuningCurve, TuningFamily, fit_tuning
+from .tuning import TuningCurve, TuningFamily, fit_linear_vco, fit_tuning
+from .uncertainty import margin_uncertainty
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",
@@ -49,9 +55,10 @@ __all__ = [
     "sampled_open_loop", "sampled_margins",
     "continuous_closed_loop_poles", "simulate_sampled",
     "pulse_doublet_vector",
-    "fit_tuning", "TuningCurve", "TuningFamily",
+    "fit_tuning", "fit_linear_vco", "TuningCurve", "TuningFamily",
     "lock_transient", "static_offset",
     "jitter_relative_sigma", "averages_for_jitter",
     "read_noise_csv", "read_tuning_csv",
+    "margin_uncertainty",
     "__version__",
 ]

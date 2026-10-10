@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import numpy as np
+from numpy.typing import ArrayLike
 
 from .loop import error_transfer, lowpass_transfer
 
@@ -45,7 +46,7 @@ __all__ = ["NoiseSpec", "white_floor", "synthesizer_psd", "rms_jitter",
            "dbc_to_psd", "psd_to_dbc", "closed_loop_lines"]
 
 
-def dbc_to_psd(dbc_per_hz):
+def dbc_to_psd(dbc_per_hz: ArrayLike) -> np.ndarray:
     """dBc/Hz -> one-sided S_phi in rad^2/Hz.
 
     Uses the standard definition L(f) = S_phi(f)/2 (IEEE Std 1139),
@@ -58,11 +59,11 @@ def dbc_to_psd(dbc_per_hz):
     return 2.0 * 10.0 ** (np.asarray(dbc_per_hz, dtype=float) / 10.0)
 
 
-def psd_to_dbc(s_phi):
+def psd_to_dbc(s_phi: ArrayLike) -> np.ndarray:
     """One-sided S_phi (rad^2/Hz) -> dBc/Hz, L(f) = S_phi(f)/2."""
     s = np.asarray(s_phi, dtype=float)
-    if np.any(s <= 0.0):
-        raise ValueError("PSD values must be positive")
+    if np.any(s <= 0.0) or not np.all(np.isfinite(s)):
+        raise ValueError("PSD values must be finite and positive")
     return 10.0 * np.log10(s / 2.0)
 
 
@@ -106,7 +107,7 @@ class NoiseSpec:
         object.__setattr__(self, "_logf", np.log10(f))
         object.__setattr__(self, "_ldb", d)
 
-    def psd(self, f_hz):
+    def psd(self, f_hz: ArrayLike) -> np.ndarray:
         """One-sided S_phi (rad^2/Hz), log-log interpolated.
 
         Refuses outside the measured offset range: this spec was never
@@ -123,7 +124,7 @@ class NoiseSpec:
         db = np.interp(np.log10(f), self._logf, self._ldb)
         return dbc_to_psd(db)
 
-    def phase_variance(self, f_lo_hz, f_hi_hz):
+    def phase_variance(self, f_lo_hz: float, f_hi_hz: float) -> float:
         """Integrated phase noise (rad^2) of this spec from f_lo to f_hi.
 
         The exact integral of the spec's own interpolation (straight
@@ -141,7 +142,8 @@ class NoiseSpec:
         return _loglog_integral(nodes, self.psd(nodes))
 
 
-def white_floor(dbc_per_hz, reference, f_lo_hz=1.0, f_hi_hz=1e9):
+def white_floor(dbc_per_hz: float, reference: str, f_lo_hz: float = 1.0,
+                f_hi_hz: float = 1e9) -> NoiseSpec:
     """A flat noise floor from one measured number.
 
     This is a deliberate modeling assumption (white over the band),
@@ -153,8 +155,10 @@ def white_floor(dbc_per_hz, reference, f_lo_hz=1.0, f_hi_hz=1e9):
                      label="white-floor assumption")
 
 
-def synthesizer_psd(f_hz, lg, n_div, s_vco=None, s_inband=None,
-                    s_dsm=None):
+def synthesizer_psd(f_hz: ArrayLike, lg: ArrayLike, n_div: float,
+                    s_vco: ArrayLike | None = None,
+                    s_inband: ArrayLike | None = None,
+                    s_dsm: ArrayLike | None = None) -> dict[str, np.ndarray]:
     """Assemble the output phase-noise PSD from its pieces.
 
     f_hz : offset grid (Hz).
@@ -206,7 +210,8 @@ def _loglog_integral(f, s):
     return float(np.sum(s[:-1] * f[:-1] * L * ratio))
 
 
-def rms_jitter(f_hz, s_out, f0_hz, method="trapezoid"):
+def rms_jitter(f_hz: ArrayLike, s_out: ArrayLike, f0_hz: float,
+               method: str = "trapezoid") -> float:
     """RMS absolute jitter (s): sqrt(int S df) / (2 pi f0).
 
     One-sided convention -- the integral is taken ONCE.
@@ -225,11 +230,14 @@ def rms_jitter(f_hz, s_out, f0_hz, method="trapezoid"):
     f = np.atleast_1d(np.asarray(f_hz, dtype=float))
     s = np.atleast_1d(np.asarray(s_out, dtype=float))
     f0 = float(f0_hz)
-    if f.size < 2 or np.any(np.diff(f) <= 0.0):
-        raise ValueError("need an increasing offset grid with >= 2 "
-                         "points")
-    if s.shape != f.shape or np.any(s < 0.0):
-        raise ValueError("s_out must be >= 0 on the same grid as f")
+    if f.size < 2 or not np.all(np.isfinite(f)) \
+            or np.any(np.diff(f) <= 0.0):
+        raise ValueError("need a finite, strictly increasing offset grid "
+                         "with >= 2 points")
+    if s.shape != f.shape or np.any(s < 0.0) \
+            or not np.all(np.isfinite(s)):
+        raise ValueError("s_out must be finite and >= 0 on the same grid "
+                         "as f")
     if not (np.isfinite(f0) and f0 > 0.0):
         raise ValueError("f0_hz must be finite and positive")
     if method == "trapezoid":
@@ -245,7 +253,8 @@ def rms_jitter(f_hz, s_out, f0_hz, method="trapezoid"):
     return float(np.sqrt(var) / (2.0 * np.pi * f0))
 
 
-def closed_loop_lines(f_hz, line_rad2, lg):
+def closed_loop_lines(f_hz: ArrayLike, line_rad2: ArrayLike,
+                      lg: ArrayLike) -> dict[str, np.ndarray]:
     """Divider spur lines at the synthesizer output.
 
     f_hz, line_rad2 : line frequencies and one-sided powers from
