@@ -64,7 +64,27 @@ def test_refusals():
 
 def test_metadata():
     import fracpll
-    assert fracpll.__version__ == "0.4.0"
+    assert fracpll.__version__ == "0.5.0"
     assert len(fracpll.__all__) == len(set(fracpll.__all__))
     for name in fracpll.__all__:
         assert hasattr(fracpll, name)
+
+
+def test_inversion_is_minimal_when_the_target_is_met_exactly():
+    """0.5.0 fix.  `averages_for_jitter` rounded (sigma_1/target)^2 up
+    with ceil.  When the target is exactly the error bar of some n
+    (here n = 8), rounding made the ratio slightly above 8 and it
+    returned 9 averages, although 8 already meet the target: target
+    0.01888422011962381 gave n = 9 (0.017804...) before, n = 8 now.
+    Independent check: the answer is the smallest n whose
+    jitter_relative_sigma meets the target, found by direct search."""
+    f, s = _grid()
+    for n_true in range(1, 60):
+        tgt = jitter_relative_sigma(f, s, n_true)
+        n, achieved = averages_for_jitter(tgt, f, s)
+        brute = next(k for k in range(1, 200)
+                     if jitter_relative_sigma(f, s, k) <= tgt)
+        assert n == brute == n_true
+        assert achieved <= tgt
+    tgt8 = jitter_relative_sigma(f, s, 8)
+    assert averages_for_jitter(tgt8, f, s)[0] == 8

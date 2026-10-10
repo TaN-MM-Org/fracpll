@@ -297,3 +297,72 @@ def test_first_order_output_spurs_match_exact_lines():
     for k in (1, 2, 3, 5):
         sim_dbc = 10 * np.log10(np.abs(c[reps * k]) ** 2)
         assert abs(sim_dbc - model["sideband_dbc"][k - 1]) < 0.5
+
+
+def test_fractional_sequence_continues_through_a_long_pull_in():
+    """0.5.0 fix.  The divider pattern was generated for n_cycles + 8
+    divider edges.  A pull-in from above makes more divider edges than
+    reference edges (one more per cycle slip), so after more than 8
+    slips the last divider edges silently fell back to the integer
+    ratio N, and the end of the record (where one reads the locked
+    state) was pulled toward N f_ref.  Here 60 slips: with the old code
+    the last 52 counts were wrong (35 of them differ from the pattern),
+    the phase drifted by -2.4e-3 cycles per cycle over the last 50
+    cycles, and v_c ended at 0.4754 V instead of near the 0.5000 V lock
+    voltage.  Independent check: the counts must equal a separately
+    generated MASH pattern, edge for edge."""
+    from fracpll import mash_sequence
+    num, den = 104857, 1 << 20
+    vco = LinearVCO(1.995e9, 20e6, REF)
+    v_lock = ((40 + num / den) * 50e6 - 1.995e9) / 20e6
+    r = simulate_pll(vco, 40, 50e6, 100e-6, 100e-12, [(4.7e3, 1.5e-9)],
+                     n_cycles=12000, num=num, den=den, mash_order=3,
+                     vc0=v_lock + 3.0)
+    assert r.slips > 8                       # the case that used to fail
+    assert r.counts.size > r.t_ref.size + 8  # pattern used past n + 8
+    d = mash_sequence(num, den, 3, r.counts.size)
+    assert np.array_equal(r.counts, 40 + d)
+    # locked on the fractional ratio to the end of the record
+    psi = r.psi_ref
+    assert abs(psi[-1] - psi[-51]) / 50 < 1e-4
+    assert abs(r.vc_ref[-1] - v_lock) < 0.005  # old code: 0.0246 off
+
+
+def test_divider_count_below_one_is_refused():
+    """0.5.0 fix.  With a small integer part, a MASH pattern can ask
+    the divider for 0 or a negative number of oscillator cycles, which
+    no divider can do.  The old code ran anyway: n_int = 1 with a
+    third-order MASH (fraction 1/4) gave counts down to -1 and reported
+    63 'cycle slips'; n_int = 2 gave counts of 0.  Both are now refused,
+    and the smallest ratio that the pattern reaches still runs."""
+    from fracpll import mash_sequence
+    fr = 50e6
+    d = mash_sequence(1, 4, 3, 408)
+    assert d.min() == -2                     # so n_int = 3 is the minimum
+    for n_int in (1, 2):
+        vco = LinearVCO((n_int + 0.25) * fr - 2.5e6, 5e6, REF)
+        with pytest.raises(ValueError, match="count"):
+            simulate_pll(vco, n_int, fr, 100e-6, 100e-12, [(4.7e3, 1.5e-9)],
+                         n_cycles=400, num=1, den=4, mash_order=3)
+    vco = LinearVCO(3.25 * fr - 2.5e6, 5e6, REF)
+    r = simulate_pll(vco, 3, fr, 100e-6, 100e-12, [(4.7e3, 1.5e-9)],
+                     n_cycles=400, num=1, den=4, mash_order=3)
+    assert r.counts.min() == 1 and r.slips == 0
+
+
+@pytest.mark.parametrize("bad", [
+    dict(f_ref_hz=float("nan")), dict(f_ref_hz=float("inf")),
+    dict(icp=float("nan")), dict(i_dn=float("nan")),
+    dict(i_leak=float("nan")), dict(t_reset=float("nan")),
+    dict(t_deadzone=float("inf")), dict(vc0=float("nan")),
+    dict(phase0_cycles=float("nan")), dict(quad_nodes=0),
+])
+def test_simulate_pll_refuses_non_finite_inputs(bad):
+    """0.5.0: f_ref_hz = NaN used to hang forever (no event time ever
+    compared true), and icp = NaN returned a run with no divider edges
+    and a NaN control voltage.  Now each is a ValueError."""
+    kw = dict(vco=VCO, n_int=N, f_ref_hz=FR, icp=200e-6, c_shunt=C0,
+              branches=BR, n_cycles=20)
+    kw.update(bad)
+    with pytest.raises(ValueError):
+        simulate_pll(**kw)

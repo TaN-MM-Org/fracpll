@@ -131,3 +131,18 @@ def test_dbc_convention_is_one_convention():
     assert np.allclose(out["sideband_dbc"][ok],
                        psd_to_dbc(out["line_rad2"][ok]), rtol=0,
                        atol=1e-12)
+
+
+def test_non_finite_noise_inputs_are_refused():
+    """0.5.0: a NaN in the PSD or the offset grid used to come back as
+    a NaN jitter or NaN dBc value; now it is refused."""
+    f = np.array([1e3, 1e4, 1e5])
+    with pytest.raises(ValueError, match="finite"):
+        rms_jitter(f, np.array([1e-9, np.nan, 1e-11]), 1e9)
+    with pytest.raises(ValueError, match="finite"):
+        rms_jitter(np.array([1e3, np.nan, 1e5]), np.ones(3), 1e9)
+    with pytest.raises(ValueError, match="finite"):
+        rms_jitter(f, np.array([1e-9, np.inf, 1e-11]), 1e9,
+                   method="loglog")
+    with pytest.raises(ValueError, match="finite"):
+        psd_to_dbc(np.array([1e-10, np.nan]))

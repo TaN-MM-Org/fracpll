@@ -75,3 +75,11 @@ def test_scan_band_must_be_ordered():
                   f_hi=1e3)
     with pytest.raises(ValueError, match="f_lo < f_hi"):
         stability(100e-6, 20e6, 40.0, zf, f_ref_hz=50e6, f_lo=0.0)
+
+
+def test_scan_grid_needs_two_points():
+    """0.5.0: n_grid = 1 used to refuse with the misleading message
+    that |L| does not cross unity."""
+    zf = lambda w: loop_filter_impedance(w, C1, [(R2, C2)])
+    with pytest.raises(ValueError, match="n_grid"):
+        stability(100e-6, 20e6, 40.0, zf, f_ref_hz=50e6, n_grid=1)

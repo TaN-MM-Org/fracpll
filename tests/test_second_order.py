@@ -128,3 +128,22 @@ def test_refusals():
     with pytest.raises(ValueError, match="mean"):
         simulate_sampled(ICP, 20e6, 40.0, FR, 100e-12, BR, n_int=40,
                          num=NUM, den=DEN, mash_order=3, n_cycles=10)
+
+
+def test_per_cycle_input_checks():
+    """0.5.0: a NaN pump current reached the eigenvalue solver and came
+    back as numpy's LinAlgError; `simulate_sampled` ran with a negative
+    pump current, and with pump_polarity=2 it doubled the loop gain.
+    All are now refused with a ValueError that names the values."""
+    from fracpll import sampled_stability
+    with pytest.raises(ValueError, match="icp"):
+        sampled_stability(float("nan"), 20e6, 40.0, FR, 100e-12, BR)
+    with pytest.raises(ValueError, match="icp"):
+        simulate_sampled(-ICP, 20e6, 40.1, FR, 100e-12, BR,
+                         u_cycles=np.zeros(4))
+    with pytest.raises(ValueError, match="pump_polarity"):
+        simulate_sampled(ICP, 20e6, 40.1, FR, 100e-12, BR,
+                         u_cycles=np.zeros(4), pump_polarity=2)
+    with pytest.raises(ValueError, match="f_ref"):
+        simulate_sampled(ICP, 20e6, 40.1, float("inf"), 100e-12, BR,
+                         u_cycles=np.zeros(4))
