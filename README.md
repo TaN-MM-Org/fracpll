@@ -19,9 +19,12 @@ questions every design has to answer:
 - What unwanted tones (spurs) does the fractional divider create?
 - How long must the measurement instrument average before the jitter
   number is trustworthy?
+- How well are the loop bandwidth and the margins known, given how
+  well the pump current, Kvco and the filter parts are known?
 
 It also reads your measured noise traces and tuning curves straight
-from text files (CSV and similar).
+from text files (CSV and similar), and fits a straight-line Kvco to
+measured tuning points with its uncertainty.
 
 The main results are checked by automated tests against independent
 calculations (see [How the results are checked](#how-the-results-are-checked)).
@@ -130,14 +133,14 @@ overlap.
 | **Edge by edge** | Nothing; every reference and divider edge time is solved for (exactly for a straight-line tuning curve, by accurate numerical integration for a measured one) | Large disturbances, pull-in with skipped cycles, pump mismatch, leakage, dead zone, measured tuning curves | `simulate_pll` |
 
 Rule of thumb: start with the averaged model. If it refuses because
-the loop is too fast, use the per-cycle model. If you need behaviour
+the loop is too fast, use the per-cycle model. If you need behavior
 far from lock or circuit non-idealities, use the edge-by-edge
 simulator.
 
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with fracpll 0.4.0. The circuit values are illustrative
+printed with fracpll 0.5.0. The circuit values are illustrative
 design values, not a recommended design.
 
 ### 1. Is the loop stable?
@@ -245,7 +248,7 @@ or 0.2 ns.
 The run starts from the bottom of the measured voltage range and uses
 the averaged model, which is written for a positive Kvco (for a
 falling tuning curve it refuses and points to `simulate_pll`). It
-replaces the phase detector's exact behaviour with a smooth curve
+replaces the phase detector's exact behavior with a smooth curve
 (a tanh), so the settling time is an estimate; `simulate_pll` gives
 the edge-accurate transient. The settling time is the last moment the
 phase error is more than `settle_tol_rad` (default 0.05 rad) away from
@@ -397,7 +400,7 @@ With a delta-sigma divider, the edge-by-edge simulator shows more
 noise near the loop bandwidth than a linear model predicts (15 dB more
 in this example), even with perfectly matched pumps. The cause is the
 width of the current bursts. A burst of width `tau` delivers its charge
-centred `tau/2` after the reference edge, not at the edge. The
+centered `tau/2` after the reference edge, not at the edge. The
 resulting error grows with `tau` squared, and because the delta-sigma
 divider makes `tau` jump around from cycle to cycle, squaring it moves
 some of the divider's high-frequency noise down to low frequencies,
@@ -485,6 +488,78 @@ two rules agree: on the 800 points of example 2 they differ by about
 `read_tuning_csv` does the same for a (control voltage, frequency)
 file and returns a fitted tuning curve.
 
+### 10. From measured tuning points to a phase margin with an error bar
+
+```python
+from fracpll import fit_linear_vco, margin_uncertainty
+
+# Measured tuning points around the lock voltage: control voltage (V)
+# and frequency counter reading (Hz), each reading good to 0.1 MHz.
+vc = [0.30, 0.40, 0.50, 0.60, 0.70]
+f_hz = [1.99607e9, 1.99797e9, 2.00010e9, 2.00197e9, 2.00406e9]
+fit = fit_linear_vco(vc, f_hz, f_sigma_hz=0.1e6,
+                     reference="illustrative tuning points, not a measurement")
+kv, u_kv = fit["kvco_hz_per_v"], fit["u_kvco_hz_per_v"]
+print(f"Kvco = {kv / 1e6:.2f} +- {u_kv / 1e6:.2f} MHz/V "
+      f"(straight-line test: p = {fit['p_value']:.2f})")
+
+# Carry that, the pump-current calibration and the part tolerances
+# through to the loop of example 1.
+r = margin_uncertainty(icp=100e-6, kvco_hz_per_v=kv, n_div=40.0,
+                       f_ref_hz=50e6, c_shunt=100e-12,
+                       branches=[(4.7e3, 1.5e-9)],
+                       u_icp=0.02,                     # 2 % calibration
+                       u_kvco=u_kv / kv,               # from the fit
+                       u_c_shunt=0.05 / 3 ** 0.5,      # +-5 % capacitor
+                       u_branches=[(0.01 / 3 ** 0.5,   # +-1 % resistor
+                                    0.05 / 3 ** 0.5)], # +-5 % capacitor
+                       n_mc=2000, seed=1)
+fc, pm = r["nominal"]["f_crossover_hz"], r["nominal"]["phase_margin_deg"]
+print(f"loop bandwidth {fc:.0f} +- {r['u']['f_crossover_hz']:.0f} Hz")
+print(f"phase margin {pm:.1f} +- {r['u']['phase_margin_deg']:.1f} degrees")
+big = max(r["contributions"],
+          key=lambda k: abs(r["contributions"][k]["phase_margin_deg"]))
+print("largest share of the phase margin uncertainty:", big)
+mc = r["mc"]["phase_margin_deg"]
+print(f"Monte Carlo: {mc['std']:.1f} degrees, 95 % of draws in "
+      f"[{mc['p2.5']:.1f}, {mc['p97.5']:.1f}]")
+```
+
+```
+Kvco = 19.98 +- 0.32 MHz/V (straight-line test: p = 0.69)
+loop bandwidth 39983 +- 844 Hz
+phase margin 54.2 +- 0.8 degrees
+largest share of the phase margin uncertainty: branch0_c
+Monte Carlo: 0.8 degrees, 95 % of draws in [52.6, 55.7]
+```
+
+`fit_linear_vco` fits the straight line f = f0 + Kvco Vc by least
+squares and gives Kvco with its standard uncertainty (the `+-` is one
+standard deviation). It also tests whether a straight line describes
+the points: with stated reading uncertainties (`f_sigma_hz`) by a
+chi-square test, and without them by testing for a curved (quadratic)
+term. If the test fails (p below 0.001 by default), it refuses and
+suggests fitting a narrower voltage window (`vc_window`) or using
+`fit_tuning`. Without `f_sigma_hz`, the uncertainty comes from the
+scatter of the points about the line, and with only a few points it
+is itself uncertain (`fit["dof"]` gives its degrees of freedom).
+`fit["vco"]` is a `LinearVCO` ready for `simulate_pll`.
+
+`margin_uncertainty` moves each input by one standard uncertainty in
+each direction and combines the effects by the standard law of
+propagation of uncertainty (the GUM, JCGM 100:2008). Each `u_` value
+is a relative standard uncertainty: 0.02 means 2 %. A tolerance of
++-5 % with nothing else known about it counts as a rectangular
+distribution, whose standard uncertainty is 5 %/sqrt(3) (GUM 4.3.7),
+as written above. `r["contributions"]` shows how much each input adds
+(`branch0_c` is the capacitor of the first branch). With `n_mc` it
+also draws the inputs at random (the Monte Carlo method of JCGM
+101:2008) as a check. It refuses when one standard uncertainty in
+any input can make the loop unstable or take it outside the model,
+and when the result is too curved for the straight-line method (then
+it points to `n_mc`). With `model="sampled"` it uses the per-cycle
+model, at any loop bandwidth, and adds the gain margin.
+
 ## What is in the package
 
 **Loop and stability** (averaged model)
@@ -532,9 +607,20 @@ file and returns a fitted tuning curve.
   never-folding curve through your measured (voltage, frequency)
   points, its slope (Kvco), and straight-line blending between curves
   measured at different temperatures. Negative Kvco is supported.
+- `fit_linear_vco` -- a straight-line Kvco (and f0) from measured
+  tuning points, with standard uncertainties, a test that a straight
+  line describes the points, and a ready `LinearVCO` (example 10).
 - `lock_transient`, `static_offset` -- lock-in from a cold start on
   the measured curve, and the phase error that leakage and mismatch
   leave behind.
+
+**Uncertainty of the loop**
+
+- `margin_uncertainty` -- the standard uncertainty of the loop
+  bandwidth and phase margin (and of the gain margin, with
+  `model="sampled"`) from the uncertainties of the pump current, Kvco
+  and each filter part, with each input's share and an optional Monte
+  Carlo check (example 10).
 
 **Reading measured data**
 
@@ -605,11 +691,25 @@ gives its inputs, units and conventions.
   zone with nothing to push it out);
 - a measured value is given without saying where it came from;
 - a data file has text inside its data, repeated or unsorted points,
-  or missing values (the message gives the line number).
+  or missing values (the message gives the line number);
+- a delta-sigma pattern would ask the divider for fewer than one
+  oscillator cycle (`simulate_pll` with a small `n_int`);
+- a straight line does not describe the tuning points given to
+  `fit_linear_vco` (the message gives the test result), or points lie
+  exactly on a line with no stated uncertainty;
+- one standard uncertainty in any input of `margin_uncertainty` can
+  make the loop unstable or take it outside the model, the result is
+  too curved for the straight-line method, or some Monte Carlo draws
+  fail (the message gives how many);
+- a number is NaN or infinite where it would otherwise give a NaN
+  result, a NumPy error or (in `simulate_pll`, for `f_ref_hz`) a run
+  that never finishes: the inputs of `simulate_pll`, the spectra
+  given to `rms_jitter`, `psd_to_dbc` and the measurement planning
+  functions, and the loop values of the per-cycle model.
 
 ## How the results are checked
 
-90 automated tests run on every change, on Python 3.9 to 3.14, and
+122 automated tests run on every change, on Python 3.9 to 3.14, and
 once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
 (1.8.0) the package allows. Each numerical check compares the package with something independent of
 it: an exact formula, a second calculation done a different way, or a
@@ -679,6 +779,9 @@ remains the tanh model's estimate. The main checks:
 - A fractional lock keeps the average ratio `N + num/den`, drifting
   by less than 10^-6 cycles per reference cycle.
 - It locks after skipping cycles, and it works with negative Kvco.
+- In a fractional-N pull-in with 60 skipped cycles, every divider
+  count equals a separately generated MASH pattern, to the last edge,
+  and the run ends locked on the fractional ratio.
 - Its delta-sigma noise at high offsets matches the averaged formula
   (ratio between 0.85 and 1.2), and would be off by `N` squared (1600)
   with the error that version 0.1.0 had (the test asserts more than
@@ -714,7 +817,7 @@ remains the tanh model's estimate. The main checks:
   (to 1 part in 10^9 and 10^6 respectively).
 
 - For a slow loop, the per-cycle and averaged models predict the same
-  settling behaviour: their poles match after the conversion
+  settling behavior: their poles match after the conversion
   `z = exp(s T)` with `T = 1/f_ref`, to 0.1 % of each pole's distance
   from 1.
 - `simulate_sampled(order=2)` matches the edge-by-edge simulator,
@@ -727,6 +830,37 @@ remains the tanh model's estimate. The main checks:
 - Making the pulses half as wide in the same loop lowers the effect by
   about 6 dB (the test allows 4.5 to 7.5 dB), in both the simulator
   and `order=2`.
+
+**Kvco fit and uncertainty of the loop**
+
+- `fit_linear_vco` recovers an exact line; with equal stated
+  uncertainties its Kvco uncertainty equals the closed form
+  sigma/sqrt(sum (Vc - mean)^2) to 1 part in 10^12. Its weighted fit
+  and covariance equal NumPy's `polyfit`, and its fit from the scatter
+  equals SciPy's `linregress`, two independent least-squares codes.
+- Its test p-values equal closed forms: exp(-chi2/2) for 2 degrees of
+  freedom, and 1 - |t|/sqrt(2 + t^2) (Student's t with 2 degrees of
+  freedom) for the curvature test on 5 points. In 3000 simulated
+  measurements, the scatter of the fitted Kvco matches the reported
+  uncertainty within 5 %. Curved points are refused.
+- For the second-order filter, the sensitivities of the loop
+  bandwidth and phase margin to the pump current and Kvco equal
+  closed forms derived from |L| = 1 at the crossover, to 1 part in
+  10^6. Scaling every capacitor and the pump current up by the same
+  factor, and every resistor down by it, leaves the loop unchanged;
+  the sensitivities obey the sum rule this implies, to 10^-6.
+- In the fast loop of example 8, the gain margin moves exactly with
+  the pump current (to 1 part in 10^9), because the loop gain at half
+  the reference frequency is proportional to it. In a slow loop the
+  per-cycle and averaged uncertainties agree within 0.2 %. A Monte
+  Carlo run of 1000 draws agrees with the linear propagation within
+  10 %, and the number of failed draws it reports equals a count made
+  independently from the same random draws.
+
+**Fixes in this version**
+
+- Each fix listed under 0.5.0 below has a test that fails with the
+  old code and passes with the new.
 
 ## Corrections in earlier versions
 
@@ -779,6 +913,32 @@ extra low-offset noise in the edge-by-edge simulator without a cause.
   `f_ref_hz = 0`; `stability` scanned a reversed band and gave a
   misleading message. All are now refused with a clear message.
 
+**0.5.0 fixed three silent errors and tightened input checks.**
+
+- `simulate_pll` made the delta-sigma divider pattern only 8 entries
+  longer than the number of reference cycles. A pull-in from above
+  makes one extra divider edge per skipped cycle, so after more than
+  8 skipped cycles the last divider edges silently used the integer
+  ratio `N` instead of the pattern, and the end of the record (where
+  you read the locked state) was pulled toward `N` times the
+  reference. In a test run with 60 skipped cycles, the last 52 counts
+  were wrong, and the control voltage ended at 0.4754 V instead of
+  0.4998 V (the lock voltage is 0.5000 V). The pattern now grows as
+  needed. Runs with 8 or fewer skipped cycles are unchanged, bit for
+  bit.
+- `simulate_pll` accepted an integer ratio so small that the pattern
+  asked the divider for 0 or a negative number of oscillator cycles
+  (for example `n_int=1` with a third-order MASH gave counts of -1 and
+  reported 63 skipped cycles). This is now refused.
+- `averages_for_jitter` could return one average too many. Asked for
+  exactly the error bar that 8 averages give (here 1.888 %), it
+  rounded 8 up to just above 8 and answered 9. It now returns the
+  smallest number that meets the target, as documented.
+- `simulate_pll` with `f_ref_hz` set to NaN never finished, and NaN
+  pump currents, spectra or loop values gave NaN results or a NumPy
+  error in several functions. These are now refused with a message
+  that names the value.
+
 The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Limits
@@ -800,7 +960,7 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   (first-order) per-cycle model; the pulse-width effect of
   `order=2` is not part of the margins.
 - In the edge-by-edge simulator, the pump switches instantly apart
-  from the stated delays. The dead zone is modelled as a turn-on delay,
+  from the stated delays. The dead zone is modeled as a turn-on delay,
   not as transistor physics. The only noise the simulator itself
   injects is the delta-sigma divider's and any reference timing noise
   you supply; other noise sources are added in the frequency domain
@@ -818,6 +978,16 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 - The file readers do not know any instrument's file format; you
   choose the columns and the frequency unit. A decimal comma (`1,5`)
   is not supported.
+- `fit_linear_vco` fits a straight line. Over a wide voltage range a
+  real tuning curve bends, and the test then refuses; fit a window
+  around the operating point. Its uncertainties assume independent
+  readings with the stated (or a common) standard deviation.
+- `margin_uncertainty` treats the inputs as independent (uncorrelated)
+  and takes `f_ref` and `N` as exact. It is a first-order method;
+  the curvature check and the optional Monte Carlo say when that is
+  not enough. It knows only the uncertainties you give it, and the
+  model it calls (`stability` or `sampled_margins`) keeps its own
+  limits.
 - No transistor models, device physics or foundry data ship with the
   package. Your measured tuning curves and noise carry the technology,
   each with a required `reference` field.
@@ -829,7 +999,7 @@ GaN-on-SOI transistor-varactor PLL, where the oscillator has negative
 Kvco and its tuning curve comes from measurements rather than a
 formula. The parts that apply to any technology that uses a
 charge-pump loop (CMOS, SiGe, GaN, or board level) are here. The
-study's machine-learning and optimisation parts stay with the study,
+study's machine-learning and optimization parts stay with the study,
 and its foundry design-kit files are licensed material that is not
 included.
 

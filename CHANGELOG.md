@@ -5,6 +5,112 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## 0.5.0 (2026-10-10)
+
+A Kvco fit with uncertainties, propagation of measured uncertainties
+to the loop bandwidth and margins, and three fixes to silent errors.
+
+### Added
+- `fit_linear_vco(vc, f_hz, reference, f_sigma_hz=None,
+  vc_window=None, p_min=1e-3)`: straight-line least-squares fit
+  f = f0 + Kvco Vc of measured tuning points, weighted by 1/sigma^2
+  when reading uncertainties are stated, otherwise with uncertainties
+  from the residual scatter (n - 2 degrees of freedom). Returns Kvco,
+  f0, their standard uncertainties and covariance, the fitted
+  frequency at the mean voltage (uncorrelated with the slope), the
+  residuals, a test of the line and a ready `LinearVCO`. The line is
+  tested by chi-square (stated sigmas) or by an F-test for a quadratic
+  term (no sigmas), and refused below `p_min`. Also refused: fewer
+  than 3 points (4 without sigmas), non-finite or non-increasing data,
+  non-positive sigmas, and exactly collinear points with no stated
+  sigma. Standard least squares; the docstring cites Bevington and
+  Robinson, "Data Reduction and Error Analysis for the Physical
+  Sciences", 3rd ed. (2003), chapters 6 and 11.
+- `margin_uncertainty(...)` (new module `fracpll.uncertainty`): the
+  standard uncertainty of the loop bandwidth and phase margin
+  (`model="averaged"`, via `stability`) or also of the gain margin
+  (`model="sampled"`, via `sampled_margins`, any bandwidth), from
+  relative standard uncertainties of Icp, Kvco, `c_shunt` and each
+  branch R and C. Law of propagation of uncertainty for uncorrelated
+  inputs (JCGM 100:2008, eq. (10)), with each sensitivity taken as a
+  central difference over +-1 standard uncertainty; each input's
+  signed contribution is returned. Optional seeded Monte Carlo
+  (JCGM 101:2008). Refuses when +-1 standard uncertainty of any input
+  takes the loop out of the model, when the curvature over that step
+  exceeds `max_curvature` (default 10 %) of the combined uncertainty
+  and no Monte Carlo is asked for, and when any Monte Carlo draw fails
+  (the message gives the failed fraction).
+- Type hints on every public function and method.
+
+### Fixed
+- `simulate_pll`: the delta-sigma divider pattern was generated for
+  `n_cycles + 8` divider edges, and later edges fell back to the
+  integer ratio N without warning. A pull-in from above makes one
+  extra divider edge per cycle slip, so after more than 8 slips the
+  end of the record was wrong. Test case (N = 40 + 104857/2^20,
+  MASH-3, 50 MHz, start 3 V above lock, 12000 cycles, 60 slips):
+  before, the last 52 counts used N (35 differed from the pattern),
+  the excess phase drifted by -2.4e-3 cycles per cycle over the last
+  50 cycles and v_c ended at 0.47537 V; after, all 12059 counts equal
+  an independently generated MASH-3 pattern, the drift is 1.5e-6 cycles
+  per cycle and v_c ends at 0.49981 V (lock voltage 0.50000 V). The
+  pattern is now regrown from the zero state when needed; runs with 8
+  or fewer slips are bit-identical to 0.4.0 (checked on three runs).
+- `simulate_pll` accepted a MASH pattern that asks the divider for
+  fewer than one oscillator cycle. n_int = 1, MASH-3, fraction 1/4:
+  before, counts down to -1 and 63 reported cycle slips; n_int = 2:
+  counts of 0. Now a ValueError names the count and the edge.
+- `averages_for_jitter` returned n + 1 when the target equaled the
+  error bar of exactly n averages: ceil((sigma_1/target)^2) rounded
+  a ratio of 8 (plus one unit in the last place) up to 9. On the test
+  grid, target 0.01888422011962381 (the error bar of 8 averages):
+  before n = 9 (achieved 0.0178042), after n = 8 (achieved
+  0.0188842). For targets 1 to 59 averages, 16 of 59 were off by one
+  before. The estimate is now corrected against
+  `jitter_relative_sigma` itself.
+- Input checks. `simulate_pll` with `f_ref_hz = NaN` never returned
+  (no event time compared true); NaN `icp` returned a run with no
+  divider edges and NaN v_c. `rms_jitter`, `psd_to_dbc` and
+  `jitter_relative_sigma` returned NaN for a NaN in the spectrum or
+  grid. `sampled_stability` with NaN `icp` raised NumPy's LinAlgError.
+  `simulate_sampled` ran with a negative `icp`, and with
+  `pump_polarity=2` silently doubled the loop gain. `stability` with
+  `n_grid=1` said that |L| does not cross unity. All now raise
+  ValueError with the offending values in the message.
+
+### Changed
+- Inputs listed under Fixed that used to return a result (or hang)
+  now raise ValueError. No result of a valid call changes: the README
+  examples print the same values, and a bit-for-bit comparison with
+  0.4.0 (three `simulate_pll` runs, `simulate_sampled`,
+  `sampled_margins`, `stability`, `rms_jitter`, `averages_for_jitter`
+  at five targets) found no difference.
+- README: example 10 (measured tuning points to a phase margin with an
+  error bar), new entries in the function list, refusals, checks and
+  limits, the 0.5.0 corrections, 122 tests; American spelling in the
+  prose that was touched.
+
+### Tests (122 total, 32 new)
+- Regression tests for each fix above; each fails with 0.4.0 (the
+  NaN `f_ref_hz` case hangs with 0.4.0).
+- `fit_linear_vco`: closed-form uncertainties of an exact line; equal
+  to `numpy.polyfit(cov="unscaled")` (weighted) and
+  `scipy.stats.linregress` (residual scatter); chi-square p-value vs
+  exp(-chi2/2) for 2 degrees of freedom; F-test vs the Student-t
+  closed form 1 - |t|/sqrt(2 + t^2) for (1, 2) degrees of freedom;
+  3000-trial seeded Monte Carlo of the slope scatter within 5 %;
+  window fit of a parabola equal to its derivative at the window
+  center; refusals; the fitted `LinearVCO` locks `simulate_pll` at the
+  fitted lock voltage to 1e-9 V.
+- `margin_uncertainty`: Icp and Kvco sensitivities vs the closed form
+  from |L| = 1 (S = d ln|L|/d ln f) to 1e-6; the impedance-scaling sum
+  rule s_Icp + sum s_C - sum s_R = 0 to 1e-6; the fast-loop gain
+  margin step equal to -20 log10(e) atanh(u) dB to 1e-9; per-cycle vs
+  averaged uncertainties within 0.2 % for the slow loop; 1000-draw
+  Monte Carlo within 10 % of the linear result; the curvature value
+  vs direct `stability` calls; the failed-draw count reproduced from
+  the same seeded draws; refusals.
+
 ## v0.4.0 - 2026-09-30
 
 Stability margins at any loop bandwidth, exact integration of measured
