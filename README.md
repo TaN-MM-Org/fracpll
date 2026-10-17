@@ -12,6 +12,7 @@ measurements, your pump current, your filter parts -- and answers the
 questions every design has to answer:
 
 - Is the loop stable, and with how much safety margin?
+- Which filter parts give the loop bandwidth and phase margin I want?
 - How much noise does the output have, and how much timing jitter
   does that give?
 - Will the loop lock from a cold start, how fast, and how large a
@@ -24,7 +25,8 @@ questions every design has to answer:
 
 It also reads your measured noise traces and tuning curves straight
 from text files (CSV and similar), and fits a straight-line Kvco to
-measured tuning points with its uncertainty.
+measured tuning points with its uncertainty. Two worked tutorials go
+from data to a final result with error bars (see [Tutorials](#tutorials)).
 
 The main results are checked by automated tests against independent
 calculations (see [How the results are checked](#how-the-results-are-checked)).
@@ -39,6 +41,7 @@ instead, rather than returning a number that looks fine but is not.
 - [Install](#install)
 - [Three ways to model the loop](#three-ways-to-model-the-loop)
 - [Examples](#examples) (each with the output it prints)
+- [Tutorials](#tutorials)
 - [What is in the package](#what-is-in-the-package)
 - [When it refuses, and why](#when-it-refuses-and-why)
 - [How the results are checked](#how-the-results-are-checked)
@@ -140,7 +143,7 @@ simulator.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with fracpll 0.5.0. The circuit values are illustrative
+printed with fracpll 0.6.0. The circuit values are illustrative
 design values, not a recommended design.
 
 ### 1. Is the loop stable?
@@ -560,6 +563,135 @@ and when the result is too curved for the straight-line method (then
 it points to `n_mc`). With `model="sampled"` it uses the per-cycle
 model, at any loop bandwidth, and adds the gain margin.
 
+### 11. Design the filter for a bandwidth and a phase margin
+
+```python
+from fracpll import design_loop_filter
+
+d = design_loop_filter(f_c_hz=40e3, phase_margin_deg=55.0, icp=100e-6,
+                       kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6)
+print(f"C1 = {d['c1'] * 1e12:.1f} pF, R2 = {d['r2']:.0f} Ohm, "
+      f"C2 = {d['c2'] * 1e9:.4f} nF")
+a, p = d["averaged"], d["per_cycle"]
+print(f"averaged model:  {a['f_crossover_hz']:.1f} Hz, "
+      f"{a['phase_margin_deg']:.3f} degrees")
+print(f"per-cycle model: {p['f_crossover_hz']:.1f} Hz, "
+      f"{p['phase_margin_deg']:.3f} degrees, "
+      f"gain margin {p['gain_margin_db']:.1f} dB")
+```
+
+```
+C1 = 249.6 pF, R2 = 5581 Ohm, C2 = 2.2610 nF
+averaged model:  40000.0 Hz, 55.000 degrees
+per-cycle model: 40000.1 Hz, 55.000 degrees, gain margin 94.0 dB
+```
+
+`design_loop_filter` is the reverse of `stability`. Give it the loop
+bandwidth and phase margin you want, and your pump current, Kvco and
+`N`, and it returns the second-order filter (`c_shunt` = C1 and
+`branches` = [(R2, C2)]) that meets both exactly in the averaged
+model. It places the peak of the loop phase at the bandwidth, the
+classic method of W. O. Keese (National Semiconductor application
+note AN-1001, 1996). It also reads the result back with `stability`
+and with the exact per-cycle model (`sampled_margins`). The per-cycle
+margin moves away from the target as the bandwidth approaches the
+reference: the same loop designed for 4.99 MHz at 55 degrees has a
+per-cycle phase margin of 50.1 degrees. The design
+refuses a bandwidth of `f_ref/10` or more, and a phase margin outside
+0 to 90 degrees. Round the values to parts you can buy and check
+the rounded filter again (the first tutorial below does this).
+
+### 12. A third-order filter
+
+```python
+import numpy as np
+from fracpll import loop_filter_impedance, stability, third_order_impedance
+
+loop = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6)
+
+# The filter of example 1, then R3 = 10 kOhm in series to C3 = 10 pF.
+zf3 = lambda w: third_order_impedance(w, c1=100e-12, r2=4.7e3, c2=1.5e-9,
+                                      r3=10e3, c3=10e-12)
+rep = stability(zfilter=zf3, **loop)
+print(f"third order: {rep['f_crossover_hz']:.0f} Hz, "
+      f"{rep['phase_margin_deg']:.1f} degrees")
+
+# What the R3-C3 section buys: less ripple on v_c at the reference.
+w_ref = 2 * np.pi * 50e6
+z2 = loop_filter_impedance(w_ref, 100e-12, [(4.7e3, 1.5e-9)])[0]
+z3 = zf3(w_ref)[0]
+print(f"extra attenuation at 50 MHz: {20 * np.log10(abs(z2 / z3)):.1f} dB")
+
+# Too much: R3 = 20 kOhm, C3 = 1 nF puts an 8 kHz pole below the crossover.
+zbad = lambda w: third_order_impedance(w, 100e-12, 4.7e3, 1.5e-9, 20e3, 1e-9)
+try:
+    stability(zfilter=zbad, **loop)
+except ValueError as err:
+    print("refused:", str(err).split(":")[0])
+```
+
+```
+third order: 39762 Hz, 52.1 degrees
+extra attenuation at 50 MHz: 29.9 dB
+refused: phase margin -23.15 deg at crossover 1.784e+04 Hz
+```
+
+Many designs add a resistor R3 and a capacitor C3 after the
+second-order filter, to filter the reference frequency out of the
+control voltage. `third_order_impedance` gives what the loop needs:
+the control voltage at C3 per unit of pump current. Use it in the
+averaged model (`stability`, `open_loop`, `synthesizer_psd`). Keese's
+note suggests C3 at most C1/10 and R3 at least twice R2, so that the
+new pole does not interact with the main poles of the filter. The last case breaks
+that rule. Its loop phase passes -180 degrees, and the loop is
+unstable. Before 0.6.0, `stability` reported it as stable with a
+"phase margin" of 336.85 degrees (see the 0.6.0 corrections below).
+
+## Tutorials
+
+Two scripts in [`examples/`](examples) go from data to a final result
+with uncertainties. Each runs in a few seconds, uses only `fracpll`
+(and NumPy), makes its "measured" data with a fixed random seed, and
+prints the output shown here (a test checks that it still does).
+
+**`examples/tutorial_design_and_margins.py`**: tuning points measured
+around the lock voltage give Kvco with its uncertainty
+(`fit_linear_vco`); `design_loop_filter` designs the filter for
+100 kHz and 55 degrees; the parts are rounded to two digits and the
+rounded loop is checked in both models; and `margin_uncertainty`
+carries the pump current calibration, the Kvco uncertainty and the
+part tolerances to the bandwidth and the phase margin.
+
+```
+Kvco = 50.06 +- 0.13 MHz/V (chi-square test p = 0.47)
+designed: C1 = 399.8 pF, R2 = 1394 Ohm, C2 = 3.622 nF
+rounded:  C1 = 400 pF, R2 = 1400 Ohm, C2 = 3.6 nF
+rounded loop (averaged):  100.31 kHz, 54.90 degrees
+rounded loop (per cycle): 100.32 kHz, 54.90 degrees, gain margin 66.0 dB
+loop bandwidth 100.3 +- 1.8 kHz
+phase margin 54.9 +- 0.6 degrees
+largest share of the phase margin uncertainty: c_shunt
+Monte Carlo (2000 draws): phase margin 95 % in [53.6, 56.1] degrees
+```
+
+**`examples/tutorial_jitter_from_trace.py`**: a third-order loop is
+modeled; an output phase-noise trace, averaged 16 times on the
+analyzer, is read from a CSV file (`read_noise_csv`); its RMS jitter
+gets a standard uncertainty from the number of averages
+(`jitter_relative_sigma`); it is compared with the model; and
+`averages_for_jitter` plans the averages for a 0.5 % error bar. The
+trace is synthetic: the model spectrum times the scatter of a reading
+averaged 16 times.
+
+```
+loop: 39.68 kHz bandwidth, 52.1 degrees phase margin
+read 400 points from 10 kHz to 10 MHz
+measured jitter 10.98 +- 0.12 ps (16 averages)
+model jitter    10.99 ps
+difference      -0.1 standard uncertainties
+averages for a 0.5 % error bar: 79 (gives 0.500 %)
+```
+
 ## What is in the package
 
 **Loop and stability** (averaged model)
@@ -573,6 +705,17 @@ model, at any loop bandwidth, and adds the gain margin.
   `L = Icp * Kvco * Z / (j w N)`; `error_transfer` and
   `lowpass_transfer` give `1/(1+L)` and `L/(1+L)`.
 - `stability(...)` -- loop bandwidth and phase margin.
+- `third_order_impedance(w, c1, r2, c2, r3, c3)` -- the third-order
+  filter (an R3-C3 section after the second-order filter), as the
+  control voltage per unit of pump current, for the averaged model
+  (example 12).
+
+**Designing the filter**
+
+- `design_loop_filter(f_c_hz, phase_margin_deg, icp, kvco_hz_per_v,
+  n_div, f_ref_hz)` -- the second-order filter for a target loop
+  bandwidth and phase margin, read back in the averaged and per-cycle
+  models (example 11).
 
 **Delta-sigma divider**
 
@@ -697,6 +840,8 @@ gives its inputs, units and conventions.
 - a straight line does not describe the tuning points given to
   `fit_linear_vco` (the message gives the test result), or points lie
   exactly on a line with no stated uncertainty;
+- a filter design is asked for a bandwidth of `f_ref/10` or more, or
+  for a phase margin outside 0 to 90 degrees (`design_loop_filter`);
 - one standard uncertainty in any input of `margin_uncertainty` can
   make the loop unstable or take it outside the model, the result is
   too curved for the straight-line method, or some Monte Carlo draws
@@ -705,17 +850,25 @@ gives its inputs, units and conventions.
   result, a NumPy error or (in `simulate_pll`, for `f_ref_hz`) a run
   that never finishes: the inputs of `simulate_pll`, the spectra
   given to `rms_jitter`, `psd_to_dbc` and the measurement planning
-  functions, and the loop values of the per-cycle model.
+  functions, the loop values of the per-cycle model, and (since
+  0.6.0) the offsets given to `NoiseSpec.psd`, the divider phase
+  given to `simulate_sampled`, the loop gain given to
+  `synthesizer_psd` and `closed_loop_lines`, `N` given to
+  `synthesizer_psd`, and the temperature given to `TuningFamily`;
+- a filter part is zero, negative or not a number in
+  `continuous_closed_loop_poles` (as in every other model).
 
 ## How the results are checked
 
-122 automated tests run on every change, on Python 3.9 to 3.14, and
-once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
-(1.8.0) the package allows. Each numerical check compares the package with something independent of
-it: an exact formula, a second calculation done a different way, or a
-published result; none compares against a number stored from an
-earlier run. The rest check that the refusals fire, plus one check of
-the version number and the list of exported names. The lock settling
+160 automated tests run on every change, on Python 3.9 to 3.14,
+and once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
+(1.8.0) the package allows. Each numerical check compares the package
+with something independent of it: an exact formula, a second
+calculation done a different way, or a published result; none
+compares against a number stored from an earlier run. The rest check
+that the refusals fire, that the tutorials print what this README
+shows (a check of the documentation, not of the physics), plus one
+check of the version number and the list of exported names. The lock settling
 time is checked against an exact solution only in the small-signal
 limit (below); for a large start-up transient such as example 3 it
 remains the tanh model's estimate. The main checks:
@@ -857,9 +1010,36 @@ remains the tanh model's estimate. The main checks:
   10 %, and the number of failed draws it reports equals a count made
   independently from the same random draws.
 
+**Filter design and the third-order filter** (new in 0.6.0)
+
+- `design_loop_filter` gives the same parts, to 1 part in 10^12, as
+  a separate derivation in the test (the phase peak written in its
+  half-angle form, and |L| = 1 solved on the textbook second-order
+  impedance). On that impedance the designed loop has |L| = 1 and
+  the target phase margin at the target bandwidth (to 10^-10
+  degrees), with the phase at its peak there. `stability` reads the
+  designed loop back to 1 part in 10^9 and 10^-9 degrees, for five
+  designs from 1 kHz to 2.5 MHz and from 10 to 89 degrees.
+- `third_order_impedance` equals the polynomial form found by nodal
+  analysis (1 part in 10^11) and a direct solve of the three-node
+  circuit (10^9), and with R3 = 0 it is the second-order filter with
+  C1 + C3 to ground (10^12). For the loop of example 12, the margin
+  from `stability` equals the polynomial form's phase at the
+  crossover, and the poles of the closed loop (roots of its
+  characteristic polynomial) all lie in the left half plane. For the
+  refused loop, one pole lies in the right half plane.
+
+**Faster code, same results** (new in 0.6.0)
+
+- The 0.5.0 code is kept in the tests as the reference. The divider
+  patterns and repeat lengths equal it exactly (whole numbers), the
+  crossover of `stability` to 1 part in 10^12 and its phase margin to
+  10^-9 degrees, and `simulate_sampled` to 10^-12 of the largest
+  value.
+
 **Fixes in this version**
 
-- Each fix listed under 0.5.0 below has a test that fails with the
+- Each fix listed under 0.6.0 below has a test that fails with the
   old code and passes with the new.
 
 ## Corrections in earlier versions
@@ -939,6 +1119,38 @@ extra low-offset noise in the edge-by-edge simulator without a cause.
   error in several functions. These are now refused with a message
   that names the value.
 
+**0.6.0 fixed a wrong stability verdict and three crashes or silent
+NaNs.**
+
+- `stability` reported the phase margin as 180 degrees plus the angle
+  of the loop gain, an angle that NumPy gives between -180 and 180
+  degrees. When the loop phase had passed -180 degrees, the angle
+  wrapped around and the "margin" came out above 180 degrees, so an
+  unstable loop was reported as stable. This cannot happen with the
+  filters of `loop_filter_impedance`, whose phase stays above -180
+  degrees, but it can with any other filter you pass, such as a
+  third-order filter. In example 12's refused loop, 0.5.0 returned a
+  phase margin of 336.85 degrees; the margin is -23.15 degrees, and
+  the loop has a pole in the right half plane. The margin is now
+  given between -180 and 180 degrees, as `sampled_margins` already
+  did, and this loop is refused as unstable. No result for the
+  filters of `loop_filter_impedance` changes.
+- `simulate_pll` with reference timing noise (`ref_jitter_s`) of
+  exactly `n_cycles + 1` entries, the length the check asks for,
+  crashed with an IndexError at the end of the run. It read one entry
+  past the last reference edge, which the run never uses. It now runs,
+  and gives the same result, bit for bit, as with a longer array.
+- `TuningFamily` accepted temperatures written as text (`"300"`, as
+  read from a file header) and then failed with a KeyError when
+  evaluated. They are now read as numbers. A temperature given twice
+  is refused, and a NaN temperature, which returned NaN, is refused.
+- `NoiseSpec.psd`, `simulate_sampled`, `synthesizer_psd` and
+  `closed_loop_lines` returned NaN for a NaN input, and
+  `continuous_closed_loop_poles` returned the poles of a filter with a
+  negative capacitor. `sampled_margins` with `n_grid=1` refused with
+  the misleading reason that the loop gain does not cross 1. All are
+  now refused with a clear message.
+
 The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Limits
@@ -982,6 +1194,16 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   real tuning curve bends, and the test then refuses; fit a window
   around the operating point. Its uncertainties assume independent
   readings with the stated (or a common) standard deviation.
+- `design_loop_filter` designs only the second-order filter, and
+  only in the averaged model; its result is exact for the values it
+  returns, not for the rounded parts you buy. `third_order_impedance`
+  works only in the averaged model: the per-cycle model, the
+  edge-by-edge simulator and `margin_uncertainty` take only a
+  capacitor to ground with series resistor-capacitor branches.
+- `stability` gives the phase margin between -180 and 180 degrees. A
+  loop whose phase at the crossover has fallen to -360 degrees or
+  below (it takes more extra poles than the third-order filter has)
+  would be misread; no filter in this package reaches that.
 - `margin_uncertainty` treats the inputs as independent (uncorrelated)
   and takes `f_ref` and `N` as exact. It is a first-order method;
   the curvature check and the optional Monte Carlo say when that is

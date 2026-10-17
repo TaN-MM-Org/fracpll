@@ -5,14 +5,144 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
-## Unreleased
+## 0.6.0 (2026-10-17)
 
+Filter design for a target bandwidth and phase margin, the third-order
+loop filter in the averaged model, a fix to a wrong stability verdict,
+faster core routines, and two worked tutorials.
+
+### Added
+- `design_loop_filter(f_c_hz, phase_margin_deg, icp, kvco_hz_per_v,
+  n_div, f_ref_hz)` (new module `fracpll.design`): the second-order
+  passive filter (C1, R2, C2) whose averaged loop has exactly the
+  given unity-gain bandwidth and phase margin, with the loop phase at
+  its peak at the bandwidth. W. O. Keese, "An Analysis and
+  Performance Evaluation of a Passive Filter Design Technique for
+  Charge Pump Phase-Locked Loops", National Semiconductor Application
+  Note AN-1001 (May 1996), eqs. 8-12. It returns `c_shunt` and
+  `branches` ready for every model, the time constants, the read-back
+  by `stability`, and the exact per-cycle margins (`sampled_margins`).
+  Refused: a bandwidth at or above f_ref/10 (the averaged model's
+  limit), a phase margin outside (0, 90) degrees, and non-finite or
+  non-positive inputs.
+- `third_order_impedance(w, c1, r2, c2, r3, c3)`: the transimpedance
+  (control voltage at C3 per pump current) of the third-order filter
+  of AN-1001, C1 || (R2 + C2) followed by R3 in series to C3,
+  Z = (1 + s R2 C2) / (s (A0 + A1 s + A2 s^2)) with A0 = C1 + C2 + C3,
+  A1 = R2 C2 (C1 + C3) + R3 C3 (C1 + C2), A2 = C1 C2 C3 R2 R3 (nodal
+  analysis). For the averaged model (`open_loop`, `stability`,
+  `synthesizer_psd`); the per-cycle and edge models do not take it.
+- `examples/` with two tutorials (below), and README examples 11
+  (filter design) and 12 (third-order filter).
+
+### Fixed
+- `stability` returned 180 + arg L with arg L in (-180, 180] (NumPy's
+  angle), so a loop whose phase had passed -180 degrees got a "phase
+  margin" above 180 degrees and was reported as stable. Not reachable
+  with `loop_filter_impedance` filters (their loop phase stays above
+  -180 degrees), but reachable with any other `zfilter`. Test case:
+  third-order filter C1 = 100 pF, R2 = 4.7 kOhm, C2 = 1.5 nF,
+  R3 = 20 kOhm, C3 = 1 nF, Icp = 100 uA, Kvco = 20 MHz/V, N = 40,
+  50 MHz: before, f_c = 17839.6 Hz and phase margin 336.85 degrees;
+  after, the margin is -23.15 degrees and the loop is refused as
+  unstable (its closed-loop characteristic polynomial has a root in
+  the right half plane, checked in the test). The margin is now
+  reported in (-180, 180], the convention of `sampled_margins`.
+- `simulate_pll` with `ref_jitter_s` of exactly `n_cycles + 1`
+  entries (the length the input check asks for) raised IndexError
+  after the last reference edge: entry `n_cycles + 1` was read for an
+  edge the run never reaches. Before, IndexError ("index 201 is out
+  of bounds for axis 0 with size 201" for 200 cycles); after, the run
+  completes and equals, bit for bit, the run with one extra entry.
+  The docstring now says which entry moves which edge (entry k moves
+  the edge at k / f_ref; entry 0 is unused).
+- `TuningFamily` accepted temperature keys that are numbers written as
+  text (`{"300": c0, "350": c1}`) and then raised KeyError on every
+  evaluation. They are now read as numbers; the result equals the
+  family with float keys and the linear interpolation formula (checked
+  bit for bit). A temperature given twice is refused.
+- Inputs that gave NaN or a non-physical result now raise ValueError:
+  a NaN temperature in `TuningFamily.frequency`/`kvco` (returned NaN),
+  a NaN offset in `NoiseSpec.psd` (returned NaN), a NaN in
+  `simulate_sampled(u_cycles=...)` (NaN from that cycle on), a NaN
+  `n_div` or loop gain in `synthesizer_psd` and a NaN in
+  `closed_loop_lines` (returned NaN), a negative capacitor in
+  `continuous_closed_loop_poles` (returned the poles of the
+  non-physical filter, one at +2.22e6 rad/s) and a NaN `icp` there
+  (NumPy's LinAlgError), and `sampled_margins(n_grid=1)` (refused with
+  the misleading reason that |G| does not fall through 1).
+
+### Performance
+Measured on the shared 2-CPU test machine with OMP_NUM_THREADS=1: for
+each routine the median of 5 to 25 runs, repeated in 3 rounds that
+alternate 0.5.0 and 0.6.0; given as the median ratio and the range
+over the rounds (the machine load varied).
+- `mash_sequence`: the accumulators in closed form, vectorized in
+  blocks of 65536 steps (exact int64 below den = 2^44; above that the
+  integer loop of 0.5.0 runs). 2^16 + 2048 MASH-3 steps: 5.9x
+  (4.4x to 11.5x). Equal element by element to the 0.5.0 loop.
+- `mash_period`: the same closed form, searched block by block.
+  104857/2^20, MASH-3 (period 2^21): 37x (18x to 61x), 2.3 s to
+  0.06 s. Equal to the 0.5.0 state loop. `mash_line_spectrum` gains
+  through both.
+- `stability`: Brent's method on ln|L| against ln f instead of 80
+  geometric bisection steps (5 or 6 filter evaluations instead of
+  80, on 40 random loops). README example 1: 11.5x (7.2x to 15.8x); `margin_uncertainty`
+  with 2000 Monte Carlo draws (README example 10): 5.9x (4.6x to
+  7.1x). Against the bisection, kept in the tests, on 40 random loops:
+  crossover to 1e-12 relative and phase margin to 1e-9 degrees
+  (observed 3.8e-15 and 8.5e-14 on 300 loops).
+- `simulate_sampled`: the cycle loop on Python floats instead of
+  small NumPy arrays; the same operations in the same order except the
+  summation order inside Phi s. README example 7 (order 2, 67584
+  cycles): 3.2x (2.8x to 5.7x). Against the 0.5.0 loop, kept in the
+  tests: psi and tau to 1e-12 of their largest value (observed up to
+  1.9e-13), orders 1 and 2, one- and two-branch filters, both pump
+  polarities.
+
+### Changed
+- Results: no README example output changes (all twelve examples
+  run and compared). `stability`'s crossover and margin change only at
+  the level stated under Performance. Inputs listed under Fixed now
+  raise ValueError.
 - Packaging: the license is now given as the SPDX expression
   `license = "Apache-2.0"` with `license-files = ["LICENSE"]`, and the
   old license table and license classifier are gone. Building no longer
   prints setuptools' deprecation warnings (their support ends on
   2027-02-18). Building from source now needs setuptools 77 or newer;
   installing the package is unchanged.
+- README: the design question in the introduction, examples 11 and
+  12, a Tutorials section, new entries in the function list,
+  refusals, checks, corrections and limits, 160 tests.
+
+### Tutorials
+- `examples/tutorial_design_and_margins.py`: synthetic tuning points
+  (seeded) to Kvco with its uncertainty, a filter designed for 100 kHz
+  and 55 degrees, parts rounded to two digits and rechecked in both
+  models, and the bandwidth (100.3 +- 1.8 kHz) and phase margin
+  (54.9 +- 0.6 degrees) with a 2000-draw Monte Carlo check. About
+  2 s.
+- `examples/tutorial_jitter_from_trace.py`: a third-order loop, a
+  synthetic output trace averaged 16 times read from CSV, the RMS
+  jitter 10.98 +- 0.12 ps against the model's 10.99 ps, and the
+  averages for a 0.5 % error bar (79). About 1 s.
+- The printed output of both is in the README and in each script's
+  docstring; `tests/test_tutorials.py` runs them and compares.
+
+### Tests (160 total, 38 new)
+- Filter design: equal to a separate derivation in the test (half-angle
+  form of the phase peak, |L| = 1 on `second_order_impedance`) to
+  1e-12; |L| = 1 and the target margin to 1e-10 degrees at the target
+  bandwidth, with the phase at its peak; read back by `stability` to
+  1e-9 (five designs, 1 kHz to 2.5 MHz, 10 to 89 degrees); per-cycle
+  margin equal to the target for a slow loop (1e-6 degrees); refusals.
+- Third-order filter: equal to the polynomial form (1e-11), a
+  three-node nodal-matrix solve (1e-9) and the R3 = 0 limit (1e-12);
+  its loop margin equals the polynomial's phase at the crossover, and
+  its closed-loop poles lie in the left half plane; refusals.
+- A regression test for each fix above (each fails with 0.5.0).
+- Speedups held against the 0.5.0 code kept in the tests.
+- The tutorials print their documented output.
 
 ## 0.5.0 (2026-10-10)
 
