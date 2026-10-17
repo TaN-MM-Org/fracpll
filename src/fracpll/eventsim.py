@@ -194,7 +194,10 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
     vc0 : starting control voltage (default: the exact lock voltage
         of a LinearVCO; required for a measured curve).
     phase0_cycles : starting oscillator phase lead, in cycles.
-    ref_jitter_s : optional array of per-edge reference time offsets.
+    ref_jitter_s : optional per-edge reference time offsets (s), at
+        least n_cycles + 1 entries: entry k moves the reference edge
+        nominally at k / f_ref (k = 1 .. n_cycles; entry 0 belongs to
+        the start time t = 0, which is not an edge, and is unused).
 
     The divider count N + d_k of every divider edge must be at least 1
     (an oscillator cycle); a MASH pattern that asks for less (for
@@ -446,7 +449,12 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
                 t_up_start -= T
             if t_dn_start is not None:
                 t_dn_start -= T
-            next_ref = T + jit_at(k_ref + 1)
+            # the next reference edge; after the last one the loop
+            # ends, so no entry beyond n_cycles is read (before 0.6.0
+            # entry n_cycles + 1 was read here, and an array of the
+            # documented n_cycles + 1 entries raised IndexError)
+            next_ref = T + (jit_at(k_ref + 1) if k_ref < n_cycles
+                            else 0.0)
 
     return SimResult(t_ref=np.array(t_ref_l), t_div=np.array(t_div_l),
                      vc_ref=np.array(vc_l), psi_ref=np.array(psi_l),

@@ -30,6 +30,7 @@ from typing import Callable
 
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.optimize import brentq
 
 __all__ = ["open_loop", "error_transfer", "lowpass_transfer",
            "stability"]
@@ -87,6 +88,25 @@ def lowpass_transfer(lg: ArrayLike) -> np.ndarray:
     return lg / (1.0 + lg)
 
 
+def _refine_crossover(icp, kvco_hz_per_v, n_div, zfilter, a, b):
+    """The unity crossing of |L| between grid points a < b (Hz).
+
+    |L(a)| > 1 >= |L(b)|.  Brent's method on ln|L| against ln f,
+    converged to the floating-point resolution of f (xtol 4e-16 in
+    ln f).  Before 0.6.0 this was 80 steps of geometric bisection
+    (80 evaluations of the filter); Brent's method needs 5 or 6 in
+    typical loops and lands on the same root to within a few units in
+    the last place (the tests keep the bisection as the reference)."""
+    def g(x):
+        return float(np.log(np.abs(open_loop(
+            2.0 * np.pi * np.exp(x), icp, kvco_hz_per_v, n_div,
+            zfilter))[0]))
+    xa, xb = float(np.log(a)), float(np.log(b))
+    x = brentq(g, xa, xb, xtol=4e-16 * max(abs(xa), abs(xb), 1.0),
+               rtol=4 * np.finfo(float).eps, maxiter=200)
+    return float(np.exp(x))
+
+
 def stability(icp: float, kvco_hz_per_v: float, n_div: float,
               zfilter: Callable[[np.ndarray], ArrayLike], f_ref_hz: float,
               f_lo: float | None = None, f_hi: float | None = None,
@@ -94,8 +114,13 @@ def stability(icp: float, kvco_hz_per_v: float, n_div: float,
     """Crossover frequency and phase margin, with refusals.
 
     Scans |L| on a log grid from f_lo to f_hi (defaults: f_ref/1e6 to
-    f_ref/2), locates the unity-gain crossing, refines it by bisection,
-    and returns dict(f_crossover_hz, phase_margin_deg).
+    f_ref/2), locates the last downward unity-gain crossing, refines it
+    by root finding, and returns dict(f_crossover_hz,
+    phase_margin_deg), the margin being 180 deg + arg L at the
+    crossover, in (-180, 180].
+
+    zfilter may be any transimpedance from the pump current to the
+    oscillator control voltage, for example `third_order_impedance`.
 
     Refuses when |L| never crosses unity in the band, when the phase
     margin is not positive (the linearized loop is unstable), and when
@@ -128,19 +153,19 @@ def stability(icp: float, kvco_hz_per_v: float, n_div: float,
             "is not monotone here and a single crossover cannot be "
             "reported. Inspect |L(f)| directly")
     i = int(idx[-1])
-    a, b = f[i], f[i + 1]
-    for _ in range(80):
-        m = np.sqrt(a * b)
-        val = np.abs(open_loop(2.0 * np.pi * m, icp, kvco_hz_per_v,
-                               n_div, zfilter))[0]
-        if val > 1.0:
-            a = m
-        else:
-            b = m
-    fc = np.sqrt(a * b)
+    fc = _refine_crossover(icp, kvco_hz_per_v, n_div, zfilter,
+                           float(f[i]), float(f[i + 1]))
     lg = open_loop(2.0 * np.pi * fc, icp, kvco_hz_per_v, n_div,
                    zfilter)[0]
-    pm = 180.0 + np.degrees(np.angle(lg))
+    # 180 deg + arg L, reported in (-180, 180] (the convention of
+    # `sampled_margins`).  np.angle returns arg L in (-180, 180], so a
+    # loop gain whose phase has passed -180 deg (for example a
+    # third-order filter whose R3-C3 pole sits below the crossover)
+    # came out before 0.6.0 as a margin above 180 deg (336.85 instead
+    # of -23.15) and was reported as stable.
+    pm = 180.0 + float(np.degrees(np.angle(lg)))
+    if pm > 180.0:
+        pm -= 360.0
     if pm <= 0.0:
         raise ValueError(
             f"phase margin {pm:.2f} deg at crossover {fc:.4g} Hz: the "

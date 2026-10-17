@@ -20,10 +20,15 @@ straight-line Kvco fit of measured tuning points with its standard
 uncertainty and a test of the line (`fit_linear_vco`), and the
 propagation of measured input uncertainties (pump current, Kvco,
 filter parts) to the loop bandwidth and margins
-(`margin_uncertainty`).
+(`margin_uncertainty`).  Version 0.6 adds the design of a
+second-order loop filter for a target bandwidth and phase margin
+(`design_loop_filter`) and the third-order filter with an R3-C3
+section (`third_order_impedance`) for the averaged model.
 """
 
-from .filters import loop_filter_impedance, second_order_impedance
+from .design import design_loop_filter
+from .filters import (loop_filter_impedance, second_order_impedance,
+                      third_order_impedance)
 from .lock import lock_transient, static_offset
 from .loop import (error_transfer, lowpass_transfer, open_loop,
                    stability)
@@ -41,10 +46,11 @@ from .readers import read_noise_csv, read_tuning_csv
 from .tuning import TuningCurve, TuningFamily, fit_linear_vco, fit_tuning
 from .uncertainty import margin_uncertainty
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",
+    "third_order_impedance", "design_loop_filter",
     "open_loop", "error_transfer", "lowpass_transfer", "stability",
     "mash_sequence", "dsm_phase_psd", "MASH_RANGE",
     "mash_period", "mash_line_spectrum",

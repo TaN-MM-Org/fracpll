@@ -18,6 +18,25 @@ the special case of one branch, and its textbook closed form
 is held against the general expression in the tests -- two code paths,
 one impedance.
 
+Since 0.6.0, `third_order_impedance` adds the common third-order
+filter: the second-order filter followed by an R3-C3 low-pass section
+at the oscillator input (the topology of W. O. Keese, "An Analysis and
+Performance Evaluation of a Passive Filter Design Technique for Charge
+Pump Phase-Locked Loops", National Semiconductor Application Note
+AN-1001 (1996)).  It is a two-port, so what the loop needs is its
+TRANSIMPEDANCE, control voltage at C3 per pump current,
+
+    Z(s) = (1 + s R2 C2) / ( s (A0 + A1 s + A2 s^2) ),
+    A0 = C1 + C2 + C3,
+    A1 = R2 C2 (C1 + C3) + R3 C3 (C1 + C2),
+    A2 = C1 C2 C3 R2 R3,
+
+found by nodal analysis; the tests hold the code against this
+polynomial, against a nodal-matrix solve and against the R3 -> 0
+limit.  It plugs into the averaged model (`open_loop`, `stability`,
+`synthesizer_psd`); the per-cycle and edge-by-edge models take only
+the shunt-C + R-C family.
+
 Honest limits: these are ideal passive elements.  Element temperature
 or voltage dependence (a varactor C2, say) enters by evaluating the
 filter at the operating point; the tests and `fracpll.lock` treat the
@@ -30,7 +49,8 @@ from typing import Sequence
 import numpy as np
 from numpy.typing import ArrayLike
 
-__all__ = ["loop_filter_impedance", "second_order_impedance"]
+__all__ = ["loop_filter_impedance", "second_order_impedance",
+           "third_order_impedance"]
 
 
 def _check_w(w):
@@ -93,3 +113,38 @@ def second_order_impedance(w: ArrayLike, c1: float, r2: float,
     s = 1j * w
     cp = c1 * c2 / (c1 + c2)
     return (1.0 + s * r2 * c2) / (s * (c1 + c2) * (1.0 + s * r2 * cp))
+
+
+def third_order_impedance(w: ArrayLike, c1: float, r2: float, c2: float,
+                          r3: float, c3: float) -> np.ndarray:
+    """Transimpedance of the third-order passive loop filter.
+
+    C1 to ground, in parallel with a series R2-C2 branch, at the pump
+    node; then R3 in series to C3 to ground, whose voltage drives the
+    oscillator.  Returns V(C3) / I(pump) (ohm) at the angular
+    frequencies w (rad/s), as a complex array:
+
+        Z = Z_node / (1 + j w R3 C3),
+
+    with Z_node the impedance at the pump node, C1 || (R2 + C2) ||
+    (R3 + C3) (`loop_filter_impedance` with both branches).  The closed
+    polynomial form is in the module docstring.  R3 = 0 gives the
+    second-order filter with C1 + C3 to ground.
+
+    c1, c2, c3 : capacitances (F), finite and > 0.
+    r2, r3 : resistances (ohm), finite and >= 0.
+
+    Use it as `zfilter` of the averaged model, for example
+    ``stability(icp, kvco, n, lambda w: third_order_impedance(w, ...),
+    f_ref)``.  The per-cycle (`sampled_*`, `simulate_sampled`) and
+    edge-by-edge (`simulate_pll`) models do not take this filter.
+    """
+    w = _check_w(w)
+    for name, v in (("c1", c1), ("c2", c2), ("c3", c3)):
+        if not (np.isfinite(float(v)) and float(v) > 0.0):
+            raise ValueError(f"{name} must be finite and positive")
+    for name, v in (("r2", r2), ("r3", r3)):
+        if not (np.isfinite(float(v)) and float(v) >= 0.0):
+            raise ValueError(f"{name} must be finite and >= 0")
+    z_node = loop_filter_impedance(w, c1, [(r2, c2), (r3, c3)])
+    return z_node / (1.0 + 1j * w * float(r3) * float(c3))

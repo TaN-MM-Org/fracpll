@@ -86,6 +86,62 @@ def mash_sequence(num: int, den: int, m: int, n_steps: int) -> np.ndarray:
         raise ValueError("MASH order m must be 1, 2 or 3")
     if n_steps < 1:
         raise ValueError("n_steps must be >= 1")
+    if den < _VEC_DEN_MAX:
+        carries = np.empty((m, n_steps), dtype=np.int64)
+        state = [0] * m
+        for k0 in range(0, n_steps, _CHUNK):
+            k1 = min(k0 + _CHUNK, n_steps)
+            accs, cs = _mash_chunk(state, num, den, m, k1 - k0, True)
+            carries[:, k0:k1] = cs
+            state = [int(a[-1]) for a in accs]
+    else:                      # integers too large for int64 sums
+        carries = _mash_carries_loop(num, den, m, n_steps)
+    y = carries[0].copy()
+    for i in range(1, m):
+        d = carries[i].copy()
+        for _ in range(i):
+            d = np.diff(d, prepend=0)
+        y += d
+    return y
+
+
+# The accumulators in closed form, vectorized (since 0.6.0).  After
+# step k (from state a_i), stage 1 holds (a_1 + k num) mod den and stage
+# i > 1 holds (a_i + the running sum of stage i-1) mod den; a stage
+# carries when its old value plus its input reaches den, so its carry
+# is (old + input - new) / den.  Every intermediate value stays below
+# (chunk + 1) den, exact in int64 while den < _VEC_DEN_MAX; above that
+# the integer loop of 0.5.0 runs.  The tests hold both against that
+# loop element by element.
+_CHUNK = 1 << 16
+_VEC_DEN_MAX = 1 << 44
+
+
+def _mash_chunk(state, num, den, m, n, want_carries):
+    """States (and carries) of n steps of the cascade from `state`."""
+    k = np.arange(1, n + 1, dtype=np.int64)
+    accs, cs = [], []
+    inp = None
+    for i in range(m):
+        a0 = np.int64(state[i])
+        if i == 0:
+            acc = (a0 + num * k) % den
+            inp_i = np.full(n, num, dtype=np.int64)
+        else:
+            acc = (a0 + np.cumsum(inp)) % den
+            inp_i = inp
+        if want_carries:
+            prev = np.empty(n, dtype=np.int64)
+            prev[0] = a0
+            prev[1:] = acc[:-1]
+            cs.append((prev + inp_i - acc) // den)
+        accs.append(acc)
+        inp = acc
+    return accs, (np.array(cs) if want_carries else None)
+
+
+def _mash_carries_loop(num, den, m, n_steps):
+    """The integer accumulator loop of fracpll 0.5.0 (any size)."""
     acc = [0] * m
     carries = np.zeros((m, n_steps), dtype=np.int64)
     for k in range(n_steps):
@@ -96,13 +152,7 @@ def mash_sequence(num: int, den: int, m: int, n_steps: int) -> np.ndarray:
                 acc[i] -= den
                 carries[i, k] = 1
             inp = acc[i]
-    y = carries[0].copy()
-    for i in range(1, m):
-        d = carries[i].copy()
-        for _ in range(i):
-            d = np.diff(d, prepend=0)
-        y += d
-    return y
+    return carries
 
 
 def dsm_phase_psd(f_hz: ArrayLike, f_ref_hz: float, m: int) -> np.ndarray:
@@ -170,11 +220,25 @@ def mash_period(num: int, den: int, m: int,
     num, den, m = int(num), int(den), int(m)
     if den < 2 or not (0 <= num < den) or m not in (1, 2, 3):
         raise ValueError("need 0 <= num < den, den >= 2, m in {1,2,3}")
-    acc = [0] * m
-    for k in range(1, int(max_period) + 1):
-        acc = _mash_state_step(acc, num, den)
-        if all(a == 0 for a in acc):
-            return k
+    kmax = int(max_period)
+    if den < _VEC_DEN_MAX:
+        state = [0] * m
+        for k0 in range(0, kmax, _CHUNK):
+            n = min(_CHUNK, kmax - k0)
+            accs, _ = _mash_chunk(state, num, den, m, n, False)
+            zero = accs[0] == 0
+            for a in accs[1:]:
+                zero &= a == 0
+            hit = np.flatnonzero(zero)
+            if hit.size:
+                return k0 + int(hit[0]) + 1
+            state = [int(a[-1]) for a in accs]
+    else:
+        acc = [0] * m
+        for k in range(1, kmax + 1):
+            acc = _mash_state_step(acc, num, den)
+            if all(a == 0 for a in acc):
+                return k
     raise ValueError(f"period exceeds max_period = {max_period}; use "
                      "dsm_phase_psd (continuum model) for long periods")
 

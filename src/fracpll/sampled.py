@@ -52,6 +52,7 @@ and belong to the event-driven simulator.
 """
 from __future__ import annotations
 
+from operator import mul
 from typing import Any, Sequence
 
 import numpy as np
@@ -227,6 +228,8 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
     f_lo = f_ref * 1e-6 if f_lo is None else float(f_lo)
     if not (np.isfinite(f_lo) and 0.0 < f_lo < f_hi):
         raise ValueError("need 0 < f_lo < f_ref/2")
+    if int(n_grid) < 2:
+        raise ValueError(f"n_grid must be >= 2, got {n_grid!r}")
     args = (icp, kvco_hz_per_v, n_div, f_ref, c_shunt, branches,
             pump_polarity)
     f = np.geomspace(f_lo, f_hi, int(n_grid))
@@ -306,6 +309,16 @@ def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
         raise ValueError("pass the magnitude |Kvco| (> 0) the loop sees; "
                          "the sign goes in pump_polarity for the "
                          "per-cycle and edge-level models")
+    icp, nd = float(icp), float(n_div)
+    if not (np.isfinite(icp) and icp > 0.0 and np.isfinite(nd)
+            and nd >= 1.0):
+        raise ValueError("need finite icp > 0 and n_div >= 1; got "
+                         f"icp={icp!r}, n_div={nd!r}")
+    # the element checks of the averaged model's filter (before 0.6.0
+    # a negative capacitor returned the poles of a non-physical filter)
+    from .filters import loop_filter_impedance
+    loop_filter_impedance(1.0, c_shunt, branches)
+    branches = [(float(r), float(c)) for r, c in branches]
     P = np.poly1d([1.0])
     for r, cc in branches:
         P = P * np.poly1d([r * cc, 1.0])
@@ -424,7 +437,10 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
             raise ValueError("n_div must equal n_int + num/den (the mean "
                              "division ratio)")
     else:
-        u = np.asarray(u_cycles, dtype=float)
+        u = np.asarray(u_cycles, dtype=float).ravel()
+        if not np.all(np.isfinite(u)):
+            raise ValueError("u_cycles must be finite (a NaN used to "
+                             "propagate silently into psi before 0.6.0)")
     fm = FilterModes(c_shunt, branches)
     a, b, c = fm.state_matrices()
     n = fm.n
@@ -436,28 +452,53 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
     MB = M @ B
     c0 = float(c_shunt)
     two = int(order) == 2
-    s = np.zeros(n + 1)
-    K = u.size
-    psi = np.empty(K)
-    taus = np.empty(K)
-    nf = nd * f_ref
+    psi, taus = _sampled_loop(Phi, B, MB, u, kv, pol, icp, nd * f_ref,
+                              c0, two)
+    return {"psi": psi, "tau": taus}
+
+
+def _sampled_loop(Phi, B, MB, u, kv, pol, icp, nf, c0, two):
+    """The cycle loop of `simulate_sampled`, on Python floats.
+
+    Same operations, in the same order, as the NumPy-array loop of
+    0.5.0 (kept in the tests as the reference); only the matrix-vector
+    product Phi s is summed in a fixed order here, so the results agree
+    to rounding (the tests ask 1e-12 of the largest |psi|) and the loop
+    runs several times faster for the small state of a loop filter."""
+    rows = [[float(x) for x in r] for r in np.asarray(Phi)]
+    nn = len(rows)
+    last = nn - 1
+    b0 = float(B[0])
+    if np.any(np.asarray(B)[1:] != 0.0):
+        raise RuntimeError("internal: the pump enters only the "
+                           "control node")
+    mb = [float(x) for x in MB]
+    s = [0.0] * nn
+    uu = u.tolist()
+    K = len(uu)
+    psi = [0.0] * K
+    taus = [0.0] * K
+    q = pol * icp
     for k in range(K):
-        s = Phi @ s
-        tau = (u[k] - s[-1]) / nf
+        s = [sum(map(mul, r, s)) for r in rows]
+        uk = uu[k]
+        tau = (uk - s[last]) / nf
         if two:
             dpsi = kv * s[0] * tau
             if tau > 0.0:
                 dpsi += kv * pol * icp * tau * tau / (2.0 * c0)
-            tau = (u[k] - s[-1] - dpsi) / nf
-            v = -(pol * icp * tau * tau / 2.0) * MB
+            tau = (uk - s[last] - dpsi) / nf
+            cv = -(q * tau * tau / 2.0)
             if tau < 0.0:            # divider-first: pulse precedes edge
-                s[-1] += v[-1]
-        psi[k] = s[-1]
+                s[last] += cv * mb[last]
+        psi[k] = s[last]
         taus[k] = tau
-        s = s + B * (pol * icp * tau)
+        s[0] += b0 * (q * tau)
         if two:
             if tau < 0.0:
-                s[:-1] += v[:-1]
+                for i in range(last):
+                    s[i] += cv * mb[i]
             else:
-                s += v
-    return {"psi": psi, "tau": taus}
+                for i in range(nn):
+                    s[i] += cv * mb[i]
+    return np.array(psi), np.array(taus)

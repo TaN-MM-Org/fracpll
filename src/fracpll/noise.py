@@ -114,6 +114,9 @@ class NoiseSpec:
         shown a slope there, and will not invent one.
         """
         f = np.atleast_1d(np.asarray(f_hz, dtype=float))
+        if not np.all(np.isfinite(f)):
+            raise ValueError("offsets must be finite (a NaN offset used "
+                             "to return a NaN PSD before 0.6.0)")
         lo, hi = 10.0 ** self._logf[0], 10.0 ** self._logf[-1]
         if np.any(f < lo * (1 - 1e-12)) or np.any(f > hi * (1 + 1e-12)):
             raise ValueError(
@@ -175,7 +178,12 @@ def synthesizer_psd(f_hz: ArrayLike, lg: ArrayLike, n_div: float,
     lg = np.asarray(lg, dtype=complex)
     if lg.shape != f.shape:
         raise ValueError("lg must be evaluated on the same grid as f")
-    n2 = float(n_div) ** 2
+    if not np.all(np.isfinite(lg)):
+        raise ValueError("lg must be finite")
+    nd = float(n_div)
+    if not (np.isfinite(nd) and nd >= 1.0):
+        raise ValueError(f"n_div must be finite and >= 1, got {n_div!r}")
+    n2 = nd ** 2
     he2 = np.abs(error_transfer(lg)) ** 2
     hl2 = np.abs(lowpass_transfer(lg)) ** 2
     zero = np.zeros_like(f)
@@ -271,6 +279,10 @@ def closed_loop_lines(f_hz: ArrayLike, line_rad2: ArrayLike,
     lg = np.asarray(lg, dtype=complex)
     if f.shape != p.shape or lg.shape != f.shape:
         raise ValueError("f_hz, line_rad2 and lg must share one grid")
+    if not (np.all(np.isfinite(f)) and np.all(np.isfinite(p))
+            and np.all(np.isfinite(lg))) or np.any(p < 0.0):
+        raise ValueError("f_hz, lg and line_rad2 must be finite, and "
+                         "line_rad2 >= 0")
     from .mash import _small_angle_dbc
     out = np.abs(lowpass_transfer(lg)) ** 2 * p
     return {"line_rad2": out, "sideband_dbc": _small_angle_dbc(out)}

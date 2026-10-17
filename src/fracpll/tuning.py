@@ -271,18 +271,32 @@ class TuningFamily:
     refuses.
     """
     curves: Mapping[float, TuningCurve]
+    _by_t: dict = field(init=False, repr=False, compare=False,
+                        default=None)
 
     def __post_init__(self):
         if len(self.curves) < 2:
             raise ValueError("a family needs >= 2 measured "
                              "temperatures (one curve is a "
                              "TuningCurve, use it directly)")
-        for t in self.curves:
-            float(t)
+        # the curves by temperature as a float: a key such as "300"
+        # (read from a file header) used to pass this check and then
+        # fail with KeyError at evaluation (before 0.6.0)
+        by_t = {}
+        for t, curve in self.curves.items():
+            tf = float(t)
+            if not np.isfinite(tf):
+                raise ValueError(f"temperature {t!r} is not finite")
+            if tf in by_t:
+                raise ValueError(f"temperature {tf:g} K is given twice")
+            by_t[tf] = curve
+        object.__setattr__(self, "_by_t", by_t)
 
     def _pair(self, t_k):
-        ts = np.array(sorted(float(t) for t in self.curves))
+        ts = np.array(sorted(self._by_t))
         t = float(t_k)
+        if not np.isfinite(t):
+            raise ValueError(f"temperature must be finite, got {t_k!r}")
         if t < ts[0] - 1e-9 or t > ts[-1] + 1e-9:
             raise ValueError(
                 f"temperature {t:.4g} K outside the measured span "
@@ -291,7 +305,7 @@ class TuningFamily:
         i = int(np.clip(np.searchsorted(ts, t) - 1, 0, ts.size - 2))
         t0, t1 = ts[i], ts[i + 1]
         x = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
-        return self.curves[t0], self.curves[t1], x
+        return self._by_t[float(t0)], self._by_t[float(t1)], x
 
     def frequency(self, vc: ArrayLike, t_k: float) -> np.ndarray:
         """f(Vc) in Hz at temperature t_k (K), linear in T between the
