@@ -1216,21 +1216,34 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Where it comes from
 
-The methods were first written for a study of a single-chip
-GaN-on-SOI transistor-varactor PLL, where the oscillator has negative
-Kvco and its tuning curve comes from measurements rather than a
-formula. The parts that apply to any technology that uses a
-charge-pump loop (CMOS, SiGe, GaN, or board level) are here. The
-study's machine-learning and optimization parts stay with the study,
-and its foundry design-kit files are licensed material that is not
-included.
+The methods were first written for the loop model of a study of a
+single-chip GaN-on-SOI fractional-N PLL in which every block is built
+from enhancement-mode GaN transistors:
+
+> T. M. Mahim, M. M. Rahman and N. Chowdhury, "Device-physics design
+> rules for wide-temperature enhancement-mode gallium nitride
+> integrated circuits, revealed by transistor-anchored machine
+> learning", manuscript under review (2026). Code and circuit-level
+> results: [doi:10.5281/zenodo.23284701](https://doi.org/10.5281/zenodo.23284701).
+
+In that study the oscillator's tuning curves come from transistor-level
+simulation, not from a formula. fracpll likewise works from the
+tuning curves and noise numbers you give it. The parts that apply to
+any technology that uses a charge-pump loop (CMOS, SiGe, GaN, or board
+level) are here. The study's machine-learning and optimization parts
+stay with the study, and its foundry design-kit files are licensed
+material that is not included. One term differs from the study's loop
+model: here the delta-sigma noise carries no N^2 factor, because it is
+already referred to the oscillator (see `fracpll.noise`).
 
 ## Citing, support and license
 
 If `fracpll` helps your work, please cite it with the concept DOI
 [10.5281/zenodo.22829473](https://doi.org/10.5281/zenodo.22829473),
 which always points to the latest release; each release also has its
-own DOI on Zenodo. [CITATION.cff](CITATION.cff) has the details.
+own DOI on Zenodo. [CITATION.cff](CITATION.cff) has the details. If
+your work is about the GaN circuit itself, please also cite the study
+above.
 
 Written and maintained by Tanvir Mahmud Mahim (Department of
 Electrical and Electronic Engineering, BRAC University), who reviews

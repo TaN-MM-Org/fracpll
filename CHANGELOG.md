@@ -5,6 +5,32 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## 0.6.1 (2026-10-18)
+
+Documentation only. No result of the package changes.
+
+### Changed
+
+- The study fracpll comes from has a new manuscript: T. M. Mahim,
+  M. M. Rahman and N. Chowdhury, "Device-physics design rules for
+  wide-temperature enhancement-mode gallium nitride integrated
+  circuits, revealed by transistor-anchored machine learning",
+  manuscript under review (2026); code and circuit-level results at
+  doi:10.5281/zenodo.23284701. The README ("Where it comes from") and
+  `CITATION.cff` (`references`) now cite it, and the package docstring
+  names it.
+- Statements about that study now match its manuscript and released
+  code. The README said the study's oscillator has negative Kvco and a
+  measured tuning curve; the study's tuning curves come from
+  transistor-level simulation, and neither the manuscript nor its
+  released code states a negative Kvco, so that remark is gone (also
+  from the `open_loop` and `fit_tuning` docstrings). The
+  `fracpll.noise` docstring said the noise assembly is "exactly as" in
+  the study; the study's loop model multiplies the delta-sigma noise by
+  N^2, which fracpll removed in 0.2.0, so it now says so. The
+  `lock_transient` docstring no longer attributes its default start
+  voltage to the study.
+
 ## 0.6.0 (2026-10-17)
 
 Filter design for a target bandwidth and phase margin, the third-order
