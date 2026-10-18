@@ -24,15 +24,18 @@ filter parts) to the loop bandwidth and margins
 (`margin_uncertainty`).  Version 0.6 adds the design of a
 second-order loop filter for a target bandwidth and phase margin
 (`design_loop_filter`) and the third-order filter with an R3-C3
-section (`third_order_impedance`) for the averaged model.
+section (`third_order_impedance`) for the averaged model.  Version 0.7
+adds the reference spurs of a locked integer-N loop from leakage, pump
+mismatch, reset delay and dead zone (`reference_spurs`) and the
+closed-loop -3 dB bandwidth and peaking (`closed_loop_response`).
 """
 
 from .design import design_loop_filter
 from .filters import (loop_filter_impedance, second_order_impedance,
                       third_order_impedance)
 from .lock import lock_transient, static_offset
-from .loop import (error_transfer, lowpass_transfer, open_loop,
-                   stability)
+from .loop import (closed_loop_response, error_transfer,
+                   lowpass_transfer, open_loop, stability)
 from .eventsim import LinearVCO, SimResult, simulate_pll
 from .mash import (MASH_RANGE, dsm_phase_psd, mash_line_spectrum,
                    mash_period, mash_sequence)
@@ -44,15 +47,17 @@ from .sampled import (continuous_closed_loop_poles, pulse_doublet_vector,
                       sampled_stability, simulate_sampled)
 from .plan import averages_for_jitter, jitter_relative_sigma
 from .readers import read_noise_csv, read_tuning_csv
+from .spurs import reference_spurs
 from .tuning import TuningCurve, TuningFamily, fit_linear_vco, fit_tuning
 from .uncertainty import margin_uncertainty
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",
     "third_order_impedance", "design_loop_filter",
     "open_loop", "error_transfer", "lowpass_transfer", "stability",
+    "closed_loop_response", "reference_spurs",
     "mash_sequence", "dsm_phase_psd", "MASH_RANGE",
     "mash_period", "mash_line_spectrum",
     "NoiseSpec", "white_floor", "synthesizer_psd", "rms_jitter",

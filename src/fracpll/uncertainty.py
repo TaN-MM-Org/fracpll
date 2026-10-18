@@ -52,7 +52,7 @@ import numpy as np
 
 from .filters import loop_filter_impedance
 from .loop import stability
-from .sampled import sampled_margins
+from .sampled import _polarity, sampled_margins
 
 __all__ = ["margin_uncertainty"]
 
@@ -132,9 +132,7 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
     if model not in ("averaged", "sampled"):
         raise ValueError("model must be 'averaged' or 'sampled', got "
                          f"{model!r}")
-    pol = int(pump_polarity)
-    if pol not in (1, -1):
-        raise ValueError("pump_polarity must be +1 or -1")
+    pol = _polarity(pump_polarity)
     if model == "averaged" and pol != 1:
         raise ValueError("the averaged model takes |Kvco| with "
                          "pump_polarity=+1; use model='sampled' for a "

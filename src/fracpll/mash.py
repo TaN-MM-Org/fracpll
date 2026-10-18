@@ -272,9 +272,17 @@ def mash_line_spectrum(num: int, den: int, m: int, f_ref_hz: float,
         raise RuntimeError("sequence not periodic with the state period "
                            "(internal consistency check failed)")
     win = d[s0:s0 + P]
-    # exact integer running sum of den*(d - num/den)
-    cum = np.concatenate(([0], np.cumsum(win * int(den) - int(num))[:-1]))
-    if int(np.sum(win * int(den) - int(num))) != 0:
+    # exact integer running sum of den*(d - num/den).  From den = 2^44
+    # (where `mash_sequence` also leaves int64) it is summed in Python
+    # integers: before 0.7.0, win * den raised OverflowError under
+    # NumPy 2 for den >= 2^63, a valid modulus.
+    if int(den) < _VEC_DEN_MAX:
+        steps = win * int(den) - int(num)
+    else:
+        steps = np.array([int(v) * int(den) - int(num) for v in win],
+                         dtype=object)
+    cum = np.concatenate(([0], np.cumsum(steps)[:-1]))
+    if int(np.sum(steps)) != 0:
         raise RuntimeError("period does not return the phase exactly")
     phase = 2.0 * np.pi * cum.astype(float) / float(den)
     c = np.fft.fft(phase) / P

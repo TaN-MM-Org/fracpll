@@ -68,6 +68,19 @@ __all__ = ["sampled_loop_map", "sampled_stability",
            "pulse_doublet_vector"]
 
 
+def _polarity(p):
+    """+1 or -1.  Other values are refused, not truncated: before 0.7.0
+    int() turned pump_polarity=1.5 into 1 without a word."""
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        raise ValueError(f"pump_polarity must be +1 or -1, got {p!r}") \
+            from None
+    if v not in (1.0, -1.0):
+        raise ValueError(f"pump_polarity must be +1 or -1, got {p!r}")
+    return int(v)
+
+
 def _check_loop(icp, kv, nd, f_ref):
     if not all(np.isfinite(v) for v in (icp, kv, nd, f_ref)) \
             or icp <= 0.0 or nd < 1.0 or f_ref <= 0.0 or kv == 0.0:
@@ -87,10 +100,8 @@ def sampled_loop_map(icp: float, kvco_hz_per_v: float, n_div: float,
     """
     icp, kv = float(icp), float(kvco_hz_per_v)
     nd, f_ref = float(n_div), float(f_ref_hz)
-    pol = int(pump_polarity)
     _check_loop(icp, kv, nd, f_ref)
-    if pol not in (1, -1):
-        raise ValueError("pump_polarity must be +1 or -1")
+    pol = _polarity(pump_polarity)
     if pol * kv < 0.0:
         raise ValueError("pump polarity and Kvco sign give positive "
                          "feedback; use pump_polarity=-1 for a "
@@ -167,18 +178,30 @@ def sampled_open_loop(f_hz: ArrayLike, icp: float, kvco_hz_per_v: float,
                          "sampled loop has no separate response beyond "
                          "Nyquist (f and f_ref - f are the same point "
                          "of the unit circle)")
+    m, PB, k = _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
+                           branches, pump_polarity)
+    return _gain_at(f, m["Phi"], PB, k, f_ref)
+
+
+def _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt, branches,
+                pump_polarity):
+    """The loop map, Phi B and the gain factor pol Icp/(N f_ref) of G."""
     m = sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
                          branches, pump_polarity)
-    Phi = m["Phi"]
-    n1 = Phi.shape[0]
     b = FilterModes(c_shunt, branches).state_matrices()[1]
-    PB = Phi @ np.r_[b, 0.0]
+    PB = m["Phi"] @ np.r_[b, 0.0]
+    k = _polarity(pump_polarity) * float(icp) / (float(n_div) * f_ref)
+    return m, PB, k
+
+
+def _gain_at(f, Phi, PB, k, f_ref):
+    """G at the offsets f (a 1-D float array, 0 < f <= f_ref/2)."""
+    n1 = Phi.shape[0]
     z = np.exp(2j * np.pi * f / f_ref)
     z[f == 0.5 * f_ref] = -1.0            # exactly real at Nyquist
     a = z[:, None, None] * np.eye(n1)[None, :, :] - Phi[None, :, :]
     rhs = np.broadcast_to(PB.astype(complex), (f.size, n1))[:, :, None]
     x = np.linalg.solve(a, rhs)[:, :, 0]
-    k = int(pump_polarity) * float(icp) / (float(n_div) * f_ref)
     return k * x[:, -1]
 
 
@@ -230,15 +253,22 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
         raise ValueError("need 0 < f_lo < f_ref/2")
     if int(n_grid) < 2:
         raise ValueError(f"n_grid must be >= 2, got {n_grid!r}")
-    args = (icp, kvco_hz_per_v, n_div, f_ref, c_shunt, branches,
-            pump_polarity)
     f = np.geomspace(f_lo, f_hi, int(n_grid))
     f[-1] = f_hi
-    g = sampled_open_loop(f, *args)
+    # The loop map is built once and reused for every evaluation of G
+    # (since 0.7.0; before, each of the ~10 root-finding steps rebuilt
+    # it, and the final stability check built it once more).  Each G
+    # value is computed by the same operations as `sampled_open_loop`.
+    m, PB, k = _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
+                           branches, pump_polarity)
+    Phi = m["Phi"]
+    g = _gain_at(f, Phi, PB, k, f_ref)
     mag = np.abs(g)
 
     def gain(x):
-        return sampled_open_loop(min(x, f_hi), *args)[0]
+        return _gain_at(np.atleast_1d(np.asarray(min(x, f_hi),
+                                                 dtype=float)),
+                        Phi, PB, k, f_ref)[0]
 
     if mag[-1] >= 1.0:
         raise ValueError(
@@ -285,11 +315,11 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
         f_pc = f_hi                        # G(z = -1) is real
     gm_db = np.inf if np.isnan(f_pc) else \
         float(-20.0 * np.log10(abs(gain(f_pc))))
-    st = sampled_stability(*args)
+    # `sampled_stability` of the same map
+    rho = float(np.max(np.abs(np.linalg.eigvals(m["F"]))))
     return {"f_crossover_hz": float(fc), "phase_margin_deg": float(pm),
             "f_phase_crossover_hz": f_pc, "gain_margin_db": gm_db,
-            "stable": st["stable"],
-            "spectral_radius": st["spectral_radius"]}
+            "stable": bool(rho < 1.0), "spectral_radius": rho}
 
 
 def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
@@ -412,12 +442,10 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
     """
     icp, kv = float(icp), float(kvco_hz_per_v)
     nd, f_ref = float(n_div), float(f_ref_hz)
-    pol = int(pump_polarity)
-    if int(order) not in (1, 2):
-        raise ValueError("order must be 1 or 2")
+    if isinstance(order, bool) or order not in (1, 2):
+        raise ValueError(f"order must be 1 or 2, got {order!r}")
     _check_loop(icp, kv, nd, f_ref)
-    if pol not in (1, -1):
-        raise ValueError("pump_polarity must be +1 or -1")
+    pol = _polarity(pump_polarity)
     if pol * kv <= 0.0:
         raise ValueError("pump polarity and Kvco sign must give negative "
                          "feedback (pump_polarity=-1 for negative Kvco)")
@@ -426,6 +454,8 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
             raise ValueError("pass u_cycles, or num/den/mash_order and "
                              "n_cycles")
         from .mash import mash_sequence
+        if int(n_cycles) < 1:
+            raise ValueError(f"n_cycles must be >= 1, got {n_cycles!r}")
         m = int(mash_order)
         if m == 0:
             u = np.zeros(int(n_cycles))

@@ -80,6 +80,7 @@ from scipy.optimize import brentq
 
 from ._network import FilterModes
 from .mash import mash_sequence
+from .sampled import _polarity
 
 if TYPE_CHECKING:                      # for the type hints only
     from .tuning import TuningCurve
@@ -226,9 +227,7 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
     i_leak = float(i_leak)
     if not math.isfinite(i_leak):
         raise ValueError(f"i_leak must be finite, got {i_leak!r}")
-    pol = int(pump_polarity)
-    if pol not in (1, -1):
-        raise ValueError("pump_polarity must be +1 or -1")
+    pol = _polarity(pump_polarity)
     t_reset, t_dz = float(t_reset), float(t_deadzone)
     if not (math.isfinite(t_reset) and math.isfinite(t_dz)
             and t_reset >= 0.0 and t_dz >= 0.0):
@@ -242,6 +241,8 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
     if int(quad_nodes) < 1:
         raise ValueError(f"quad_nodes must be >= 1, got {quad_nodes!r}")
     n_cycles = int(n_cycles)
+    if n_cycles < 1:
+        raise ValueError(f"n_cycles must be >= 1, got {n_cycles}")
 
     fm = FilterModes(c_shunt, branches)
     linear = isinstance(vco, LinearVCO)
