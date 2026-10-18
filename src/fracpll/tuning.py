@@ -82,8 +82,7 @@ def fit_tuning(vc: ArrayLike, f_hz: ArrayLike, reference: str,
 
     vc : control voltages (V), strictly increasing, >= 4 points.
     f_hz : measured frequencies (Hz), strictly monotone (either
-        direction -- negative-Kvco oscillators are first-class here,
-        the co-designed GaN ring is one).
+        direction -- negative-Kvco oscillators are first-class here).
     reference : where the measurement comes from (mandatory, >= 8
         characters).
     """

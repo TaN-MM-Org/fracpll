@@ -1,8 +1,9 @@
 """fracpll: charge-pump fractional-N PLL design from measured pieces.
 
 The loop, noise, delta-sigma, tuning-curve and lock machinery of a
-(fractional-)N synthesizer, distilled from the monolithic GaN-on-SOI
-PLL co-design study into a NumPy/SciPy engine that runs on YOUR
+(fractional-)N synthesizer, distilled from the loop model of the monolithic GaN-on-SOI
+PLL study (T. M. Mahim, M. M. Rahman and N. Chowdhury; see the README
+for the citation) into a NumPy/SciPy engine that runs on YOUR
 measured tuning curves and noise numbers -- and refuses, with an
 explanation, wherever its own model stops being trustworthy.  Where
 the averaged model stops, version 0.2 goes on: an edge-accurate
@@ -46,7 +47,7 @@ from .readers import read_noise_csv, read_tuning_csv
 from .tuning import TuningCurve, TuningFamily, fit_linear_vco, fit_tuning
 from .uncertainty import margin_uncertainty
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",

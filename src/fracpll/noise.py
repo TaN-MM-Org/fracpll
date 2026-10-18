@@ -1,8 +1,9 @@
 """Closed-loop phase noise and jitter, from YOUR measured pieces.
 
 The synthesizer output phase noise assembles three paths through the
-loop transfers, exactly as in the GaN-on-SOI co-design study this
-package is distilled from:
+loop transfers, as in the loop model of the GaN-on-SOI PLL study this
+package is distilled from (the README gives the citation), except that
+the delta-sigma term here carries no N^2 (see below):
 
     S_out(f) = |1/(1+L)|^2 S_vco(f)
              + |L/(1+L)|^2 ( N^2 S_inband(f) + S_dsm(f) ),

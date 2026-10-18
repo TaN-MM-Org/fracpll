@@ -91,7 +91,7 @@ def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
         branch needs R > 0; an R = 0 branch belongs in c_shunt).
     i_leak, mismatch : pump non-idealities (A and fractional).
     vc0 : starting control voltage (V), inside the measured range
-        (default: its low edge, the precharge-low start of the study).
+        (default: its low edge).
     phi0 : starting phase error (reference radians).
     t_end : integration time in seconds (default 1e5 N / (2 pi f_ref),
         about 32 ms for N = 100 at 50 MHz -- long, so that the

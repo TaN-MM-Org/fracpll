@@ -7,8 +7,9 @@ The averaged small-signal model of a charge-pump PLL is one formula,
 
 with Icp the pump current (A), Z the loop-filter impedance (ohm), Kvco
 the oscillator gain in Hz/V and N the (mean) division ratio.  This is
-exactly the loop expression of the GaN-on-SOI co-design study this
-package is distilled from.
+exactly the loop expression of the GaN-on-SOI PLL study this package
+is distilled from (its iteration-1 loop model; the README gives the
+citation).
 
 Stability is reported, not assumed: `stability` finds the unity-gain
 crossover and the phase margin and refuses -- with the reason -- when
@@ -43,8 +44,7 @@ def open_loop(w: ArrayLike, icp: float, kvco_hz_per_v: float, n_div: float,
     w : angular frequencies (rad/s), positive.
     icp : charge-pump current (A), > 0.
     kvco_hz_per_v : oscillator tuning gain (Hz/V), > 0.  A loop built
-        around a negative-Kvco oscillator (like the co-designed GaN
-        ring) reverses the pump polarity, so the loop sees |Kvco|: pass
+        around a negative-Kvco oscillator reverses the pump polarity, so the loop sees |Kvco|: pass
         the magnitude here.  A negative value is refused, because it
         would give L < 0 at DC -- a loop with positive feedback -- and
         every result derived from it would be meaningless.  (The
