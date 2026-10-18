@@ -22,10 +22,14 @@ questions every design has to answer:
   number is trustworthy?
 - How well are the loop bandwidth and the margins known, given how
   well the pump current, Kvco and the filter parts are known?
+- Once locked, how strong are the tones at the reference frequency
+  (reference spurs) that leakage and unequal pump currents create?
+- What closed-loop bandwidth and peaking will a jitter-transfer
+  measurement show?
 
 It also reads your measured noise traces and tuning curves straight
 from text files (CSV and similar), and fits a straight-line Kvco to
-measured tuning points with its uncertainty. Two worked tutorials go
+measured tuning points with its uncertainty. Three worked tutorials go
 from data to a final result with error bars (see [Tutorials](#tutorials)).
 
 The main results are checked by automated tests against independent
@@ -143,7 +147,7 @@ simulator.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with fracpll 0.6.0. The circuit values are illustrative
+printed with fracpll 0.7.0. The circuit values are illustrative
 design values, not a recommended design.
 
 ### 1. Is the loop stable?
@@ -647,9 +651,86 @@ that rule. Its loop phase passes -180 degrees, and the loop is
 unstable. Before 0.6.0, `stability` reported it as stable with a
 "phase margin" of 336.85 degrees (see the 0.6.0 corrections below).
 
+### 13. Closed-loop bandwidth and peaking
+
+```python
+from fracpll import closed_loop_response, loop_filter_impedance, third_order_impedance
+
+loop = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6)
+zf2 = lambda w: loop_filter_impedance(w, 100e-12, [(4.7e3, 1.5e-9)])
+zf3 = lambda w: third_order_impedance(w, 100e-12, 4.7e3, 1.5e-9, 10e3, 10e-12)
+for name, zf in [("example 1 filter", zf2), ("with R3-C3      ", zf3)]:
+    r = closed_loop_response(zfilter=zf, **loop)
+    print(f"{name}: -3 dB at {r['f_3db_hz'] / 1e3:.1f} kHz, "
+          f"peaking {r['peaking_db']:.2f} dB at {r['f_peak_hz'] / 1e3:.1f} kHz")
+```
+
+```
+example 1 filter: -3 dB at 59.9 kHz, peaking 2.86 dB at 24.7 kHz
+with R3-C3      : -3 dB at 61.3 kHz, peaking 3.01 dB at 25.3 kHz
+```
+
+The loop bandwidth of examples 1 and 8 is the crossover of the open
+loop (40 kHz here). A measurement of the closed loop, for example of
+how jitter on the reference reaches the output, shows `L/(1+L)`
+instead. Its -3 dB point lies above the crossover, and because the
+loop filter integrates (a "type 2" loop), the response rises above
+0 dB before it falls: that rise is the peaking, which amplifies
+reference and phase detector noise near 25 kHz here.
+`closed_loop_response` first checks the loop with `stability` (and
+refuses what it refuses), then finds the peak and the -3 dB point by
+root finding. It uses the averaged model and refuses a -3 dB point
+above `f_ref/10`. The R3-C3 section of example 12 costs a little phase
+margin, so it raises the peaking.
+
+### 14. Reference spurs from leakage and pump mismatch
+
+```python
+from fracpll import reference_spurs
+
+# Example 4's loop, locked: 2 uA leakage, DN 5 % weaker than UP,
+# 100 ps reset delay.
+loop = dict(f_ref_hz=50e6, icp=200e-6, kvco_hz_per_v=400e6, n_div=100,
+            c_shunt=50e-12, branches=[(4.7e3, 1.5e-9)])
+sp = reference_spurs(**loop, i_dn=190e-6, i_leak=2e-6, t_reset=100e-12,
+                     n_harmonics=3)
+print(f"locked timing offset {sp['dt_s'] * 1e12:.1f} ps")
+for f, dbc, v in zip(sp["f_hz"], sp["sideband_dbc"], sp["ripple_v"]):
+    print(f"spur at {f / 1e6:.0f} MHz: {dbc:.1f} dBc "
+          f"(control-voltage ripple {v * 1e6:.1f} uV)")
+
+# The same loop with a matched pump and no leakage has no spur at all.
+print(reference_spurs(**loop, t_reset=100e-12)["sideband_dbc"][0])
+```
+
+```
+locked timing offset 195.0 ps
+spur at 50 MHz: -59.8 dBc (control-voltage ripple 254.6 uV)
+spur at 100 MHz: -71.9 dBc (control-voltage ripple 127.2 uV)
+spur at 150 MHz: -78.9 dBc (control-voltage ripple 84.7 uV)
+-inf
+```
+
+Once an integer-N loop is locked, every reference period is the same.
+The pump fires the same short pulses each cycle to replace the charge
+that leakage drains, so the control voltage ripples at the reference
+frequency and its harmonics, and that ripple puts tones on both sides
+of the output. `reference_spurs` takes the locked timing offset from
+the exact charge balance (`pfd_static_offset`, the same 195 ps as
+example 4), the pulses from the phase detector's rules (reset delay
+and dead zone included), and the ripple from the filter's impedance at
+each harmonic. No small-pulse approximation is made. The spur level
+uses the same dBc rule as the divider tones of example 6. It first
+checks that the loop is stable (with the per-cycle model, at any
+bandwidth), since an unstable loop has no locked state. With `r3` and
+`c3` it adds the R3-C3 section of example 12, which is what that
+section is for; the third tutorial below uses it to meet a spur limit.
+Pass the slope of a measured tuning curve at the lock voltage as
+`kvco_hz_per_v`.
+
 ## Tutorials
 
-Two scripts in [`examples/`](examples) go from data to a final result
+Three scripts in [`examples/`](examples) go from data to a final result
 with uncertainties. Each runs in a few seconds, uses only `fracpll`
 (and NumPy), makes its "measured" data with a fixed random seed, and
 prints the output shown here (a test checks that it still does).
@@ -692,6 +773,32 @@ difference      -0.1 standard uncertainties
 averages for a 0.5 % error bar: 79 (gives 0.500 %)
 ```
 
+**`examples/tutorial_reference_spurs.py`** (new in 0.7.0): repeated
+bench readings of the UP and DN pump currents and of the leakage at
+the control node are averaged to means with standard uncertainties; a
+second-order filter is designed for 100 kHz and 55 degrees and
+rounded; `reference_spurs` gives the spurs of the locked loop, with a
+Monte Carlo uncertainty that draws each current from the distribution
+JCGM 101:2008 (Table 1 and 6.4.9.2) gives the mean of a few readings
+(a t-distribution with n - 1 degrees of freedom); an R3-C3 section
+brings the 50 MHz spur below a -90 dBc limit; and
+`closed_loop_response` shows what that section costs in phase margin,
+closed-loop bandwidth and peaking.
+
+```
+UP current   199.95 +- 0.10 uA (8 readings)
+DN current   195.98 +- 0.08 uA (8 readings)
+leakage      1.861 +- 0.039 uA (12 readings)
+filter: C1 = 640 pF, R2 = 870 Ohm, C2 = 5.8 nF
+locked timing offset: 0.180 ns (reference leads)
+second order: spur at 50 MHz -82.6 +- 0.2 dBc, at 100 MHz -94.7 +- 0.2 dBc
+with R3 = 4.7 kOhm, C3 = 6.8 pF: spur at 50 MHz -102.7 +- 0.2 dBc
+limit -90 dBc at 50 MHz: second order fails, third order passes
+              phase margin  -3 dB bandwidth  peaking
+second order  55.0 degrees  162.1 kHz        2.10 dB
+third order   53.7 degrees  165.1 kHz        2.17 dB
+```
+
 ## What is in the package
 
 **Loop and stability** (averaged model)
@@ -709,6 +816,9 @@ averages for a 0.5 % error bar: 79 (gives 0.500 %)
   filter (an R3-C3 section after the second-order filter), as the
   control voltage per unit of pump current, for the averaged model
   (example 12).
+- `closed_loop_response(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz)`
+  -- the -3 dB bandwidth and the peaking of the closed loop `L/(1+L)`
+  (example 13).
 
 **Designing the filter**
 
@@ -736,6 +846,11 @@ averages for a 0.5 % error bar: 79 (gives 0.500 %)
   required `reference` saying where it came from.
 - `synthesizer_psd` -- the output noise from the three sources.
 - `closed_loop_lines` -- divider tones as output spurs.
+- `reference_spurs(f_ref_hz, icp, kvco_hz_per_v, n_div, c_shunt,
+  branches, ...)` -- the spurs at the reference frequency and its
+  harmonics of a locked integer-N loop, from leakage, unequal UP and
+  DN currents, reset delay and dead zone, with an optional R3-C3
+  section (example 14).
 - `rms_jitter` -- jitter in seconds from a noise spectrum;
   `method="loglog"` integrates exactly between points joined by
   straight lines on a log-log plot (use it for a few measured points).
@@ -856,11 +971,21 @@ gives its inputs, units and conventions.
   `synthesizer_psd` and `closed_loop_lines`, `N` given to
   `synthesizer_psd`, and the temperature given to `TuningFamily`;
 - a filter part is zero, negative or not a number in
-  `continuous_closed_loop_poles` (as in every other model).
+  `continuous_closed_loop_poles` (as in every other model);
+- (since 0.7.0) `reference_spurs` is asked about a loop with no locked
+  state: the per-cycle model finds it unstable, or with an R3-C3
+  section the averaged model refuses it, or the phase detector has no
+  locked operating point;
+- (since 0.7.0) `closed_loop_response` finds no peak inside the
+  scanned band (for example a filter with no capacitor) or a -3 dB
+  point above `f_ref/10`;
+- (since 0.7.0) `pump_polarity` is anything but +1 or -1 (1.5 used to
+  run as +1), `simulate_sampled`'s `order` is not 1 or 2, or a
+  simulator is asked for fewer than one reference cycle.
 
 ## How the results are checked
 
-160 automated tests run on every change, on Python 3.9 to 3.14,
+226 automated tests run on every change, on Python 3.9 to 3.14,
 and once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
 (1.8.0) the package allows. Each numerical check compares the package
 with something independent of it: an exact formula, a second
@@ -1029,17 +1154,46 @@ remains the tanh model's estimate. The main checks:
   characteristic polynomial) all lie in the left half plane. For the
   refused loop, one pole lies in the right half plane.
 
-**Faster code, same results** (new in 0.6.0)
+**Reference spurs and the closed loop** (new in 0.7.0)
+
+- `reference_spurs` is held against a separate time-domain
+  calculation made in the test: the filter's circuit equations,
+  stepped exactly over each piece of one reference period with a
+  constant current, closed into a repeating solution, and its
+  harmonics found by numerical integration. They agree to 10^-9 of
+  the largest harmonic (10^-8 dB), for second- and third-order
+  filters, with leakage, unequal pumps, reset delay and dead zone.
+  For example 4's loop, five ways (leakage only, mismatch, dead zone
+  with either edge first, and a reversed pump with negative Kvco), the
+  locked timing offset equals the edge-by-edge simulator's to 1 part
+  in 10^8, and the simulator's control voltage at the reference edge
+  equals that time-domain solution to 10^-8 of the ripple. In the
+  limit of very short pulses the ripple is the leakage current times
+  the filter impedance at each harmonic (to 10^-9). With matched
+  pumps and no leakage the spur is exactly zero.
+- `closed_loop_response` matches the textbook second-order loop (a
+  resistor in series with a capacitor) in closed form, derived in the
+  test: the -3 dB frequency to 1 part in 10^12 and the peaking to
+  10^-9 dB, for damping factors from 0.3 to 5; the frequency of the
+  peak, which sits on a flat maximum, to 2 parts in 10^6. For the
+  filters of examples 1 and 12 it agrees with a scan of a million
+  points that uses a separate impedance formula.
+
+**Faster code, same results** (new in 0.6.0 and 0.7.0)
 
 - The 0.5.0 code is kept in the tests as the reference. The divider
   patterns and repeat lengths equal it exactly (whole numbers), the
   crossover of `stability` to 1 part in 10^12 and its phase margin to
   10^-9 degrees, and `simulate_sampled` to 10^-12 of the largest
   value.
+- The 0.6.1 `sampled_margins` is kept in the tests as the reference
+  for the 0.7.0 one: crossovers and spectral radius to 1 part in
+  10^12, margins to 10^-9 degrees and dB, on 4 fixed and 25 random
+  loops (on this machine the results were identical, on 300 loops).
 
 **Fixes in this version**
 
-- Each fix listed under 0.6.0 below has a test that fails with the
+- Each fix listed under 0.7.0 below has a test that fails with the
   old code and passes with the new.
 
 ## Corrections in earlier versions
@@ -1118,6 +1272,23 @@ extra low-offset noise in the edge-by-edge simulator without a cause.
   pump currents, spectra or loop values gave NaN results or a NumPy
   error in several functions. These are now refused with a message
   that names the value.
+
+**0.7.0 fixed a crash and tightened input checks.**
+
+- `mash_line_spectrum` crashed with an OverflowError (under NumPy 2)
+  for a modulus `den` of 2^63 or more, which the other divider
+  functions accept. It now sums the phase in Python's whole numbers
+  from `den` = 2^44 on, and gives exactly the same tones as the same
+  fraction written with a small modulus (3/64 and 3 x 2^58 / 2^64,
+  for example).
+- `pump_polarity` was rounded toward zero to a whole number, so 1.5
+  ran as +1 and -1.2 as -1 without a word, in `simulate_pll`,
+  `simulate_sampled`, `sampled_margins`, `sampled_open_loop` and
+  `margin_uncertainty`. Anything but +1 or -1 is now refused.
+  `simulate_sampled(order=2.5)` ran as order 2 and is now refused.
+  `simulate_pll` with zero or fewer cycles returned an empty run, and
+  `simulate_sampled` returned empty arrays or NumPy's "negative
+  dimensions" error; both now say that at least one cycle is needed.
 
 **0.6.0 fixed a wrong stability verdict and three crashes or silent
 NaNs.**
@@ -1210,6 +1381,21 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   not enough. It knows only the uncertainties you give it, and the
   model it calls (`stability` or `sampled_margins`) keeps its own
   limits.
+- `reference_spurs` covers an integer-N loop in its locked steady
+  state. A fractional-N divider changes the pulse width every cycle,
+  which this function does not model. The pump switches instantly
+  apart from the stated delays, as in `simulate_pll`. Kvco is one
+  number, the slope at the lock voltage, so the result is exact for a
+  straight-line tuning law and a small-ripple estimate for a measured
+  curve. The loop is checked for stability with the per-cycle model
+  (with the current of the pump whose pulse the phase error moves);
+  with an R3-C3 section, only the averaged model can check it, so the
+  loop must then be slower than `f_ref/10`. Only the reference spurs
+  from the pump are computed: coupling of the reference into the
+  oscillator by other paths is not modeled.
+- `closed_loop_response` uses the averaged model and refuses a -3 dB
+  point above `f_ref/10`; for faster loops, `sampled_open_loop` gives
+  the exact per-cycle loop gain.
 - No transistor models, device physics or foundry data ship with the
   package. Your measured tuning curves and noise carry the technology,
   each with a required `reference` field.

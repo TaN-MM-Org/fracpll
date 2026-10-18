@@ -5,6 +5,130 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## 0.7.0 (2026-10-18)
+
+Reference spurs of a locked integer-N loop, the closed-loop bandwidth
+and peaking, a fix to a crash, stricter input checks, a faster
+per-cycle margin calculation, and a third worked tutorial.
+
+### Added
+- `reference_spurs(f_ref_hz, icp, kvco_hz_per_v, n_div, c_shunt,
+  branches=(), i_dn=None, i_leak=0.0, t_reset=0.0, t_deadzone=0.0,
+  pump_polarity=1, r3=None, c3=None, n_harmonics=5)` (new module
+  `fracpll.spurs`): the spurs at k f_ref of a locked integer-N loop
+  from leakage, UP/DN mismatch, reset delay and dead zone, with an
+  optional R3-C3 section. The locked offset comes from the exact
+  charge balance (`pfd_static_offset`), the pulses from the tri-state
+  detector's rules, and the control-voltage ripple from the filter's
+  transimpedance at each harmonic times the pulses' Fourier
+  coefficients; the oscillator phase line is |Kvco| V_k/(k f_ref).
+  No small-pulse approximation. Returns the dBc (small-angle rule of
+  the package; -inf for an exactly zero line), the line powers, the
+  ripple amplitudes and the offset. Refused: a loop that the per-cycle
+  model finds unstable (checked with the current of the pump whose
+  pulse the phase error moves), with an R3-C3 section a loop that
+  `stability` refuses, no locked operating point, positive feedback,
+  r3 without c3, and non-finite or non-physical inputs.
+- `closed_loop_response(icp, kvco_hz_per_v, n_div, zfilter,
+  f_ref_hz, f_lo=None, n_grid=4001)` (in `fracpll.loop`): the -3 dB
+  bandwidth and the peaking of L/(1+L) in the averaged model, with the
+  crossover and phase margin. Refused: what `stability` refuses, no
+  peak inside the band (a type-1 loop), and a -3 dB point above
+  f_ref/10.
+- `examples/tutorial_reference_spurs.py` (below), README examples 13
+  (closed-loop bandwidth and peaking) and 14 (reference spurs).
+
+### Fixed
+- `mash_line_spectrum` raised OverflowError ("Python int too large to
+  convert to C long", NumPy 2.5.3) for a modulus den >= 2^63, which
+  `mash_sequence` and `mash_period` accept: the int64 pattern was
+  multiplied by den in NumPy integers. From den = 2^44 on the phase is
+  now summed in Python integers. Test case 3 x 2^57 / 2^63, MASH-3:
+  before, OverflowError; after, period 128 and lines equal element by
+  element to those of 3/64 (the same pattern; also for shifts 58 and
+  70 and orders 1 and 2). Under NumPy 1.22.0 the old code ran and
+  gave the same lines (checked), so the crash was NumPy 2 only.
+- `pump_polarity` was converted with int(): 1.5 ran as +1 and -1.2 as
+  -1 without a word in `simulate_pll`, `simulate_sampled`,
+  `sampled_margins`, `sampled_open_loop` and `margin_uncertainty`
+  (before, `simulate_pll(..., pump_polarity=1.5)` returned the +1 run,
+  equal element by element; `margin_uncertainty(..., model="sampled",
+  pump_polarity=1.5)` returned uncertainties). Now anything but +1 or
+  -1 raises ValueError.
+- `simulate_sampled(order=2.5)` ran as order 2; now refused.
+  `simulate_pll` with n_cycles 0 or -5 returned an empty run, and
+  `simulate_sampled` with n_cycles 0 returned empty arrays and with -3
+  raised NumPy's "negative dimensions are not allowed"; both now raise
+  "n_cycles must be >= 1".
+
+### Performance
+Measured on the shared 2-CPU test machine with OMP_NUM_THREADS=1, as
+CPU time (process time; wall time varied too much with the machine
+load), median of 25 runs (3 for the Monte Carlo), in 5 rounds that
+alternate 0.6.1 and 0.7.0; given as the median ratio and the range
+over the rounds.
+- `sampled_margins`: the loop map (an eigen-decomposition and a matrix
+  exponential) is built once per call instead of once per evaluation
+  of the loop gain inside the root finding (about ten) plus once for
+  the stability check. Each loop-gain value is computed by the same
+  operations as before. README example 8 (two calls): 1.6x (1.2x to
+  1.7x); `margin_uncertainty(model="sampled")` with 200 Monte Carlo
+  draws: 1.6x (1.6x to 1.8x); `design_loop_filter` (README example
+  11): 1.4x (0.9x to 2.0x). Against the 0.6.1 code kept in the tests:
+  crossovers and spectral radius to 1e-12 relative, margins to 1e-9
+  degrees and dB, on 4 fixed and 25 random loops; on this machine all
+  results were identical on 300 loops.
+
+### Changed
+- Results: no README example output changes (all twelve earlier
+  examples run and compared; the header now says 0.7.0). No result of
+  a valid call changes. Inputs listed under Fixed now raise
+  ValueError.
+- README: two questions in the introduction, examples 13 and 14, the
+  third tutorial, new entries in the function list, refusals, checks,
+  corrections and limits; 226 tests.
+- Packaging: a new `MANIFEST.in` puts `examples/` into the source
+  distribution, so the tutorial tests run from it instead of being
+  skipped (checked: all 226 tests pass from the unpacked sdist).
+
+### Tutorials
+- `examples/tutorial_reference_spurs.py`: synthetic bench readings
+  (seeded) of the UP and DN currents and of the leakage, averaged to
+  means with standard uncertainties; a filter designed for 100 kHz and
+  55 degrees and rounded; the 50 MHz spur -82.6 +- 0.2 dBc with a
+  2000-draw Monte Carlo that draws each mean from the t-distribution
+  JCGM 101:2008 (Table 1, 6.4.9.2) assigns to the mean of n readings;
+  an R3-C3 section (4.7 kOhm, 6.8 pF) brings it to -102.7 +- 0.2 dBc,
+  below a -90 dBc limit, for 1.3 degrees of phase margin and 0.07 dB
+  more peaking. About 5 s of CPU time.
+- `tests/test_tutorials.py` now also runs it, and checks two of its
+  printed numbers against independent values: the drop from the R3-C3
+  section against the ratio of the two filter transimpedances at
+  50 MHz (0.1 dB), and the spur's spread against 20 log10(e) times the
+  relative uncertainty of the leakage, scaled for the t-distribution
+  (30 %).
+
+### Tests (226 total, 66 new)
+- Reference spurs against a time-domain periodic steady state built in
+  the test (matrix exponentials of the circuit equations over each
+  constant-current piece, Gauss-Legendre Fourier integrals) to 1e-9 of
+  the largest harmonic and 1e-8 dB, for second- and third-order
+  filters with leakage, mismatch, reset delay and dead zone; against
+  the edge-by-edge simulator (locked offset to 1e-8 relative, control
+  voltage at the reference edge to 1e-8 of the ripple) in five cases
+  including a dead zone with either edge first and a reversed pump;
+  the short-pulse limit |Z(j k w_ref)| I_leak (1e-9); exact Kvco^2
+  scaling, zero spur for matched pumps without leakage, and the
+  mirror symmetry of a reversed pump; the stability check's choice of
+  pump current; refusals.
+- Closed-loop response against the closed forms of the second-order
+  type-2 loop derived in the test (-3 dB frequency 1e-12 relative,
+  peaking 1e-9 dB, peak position 2e-6, the last set by the flat
+  maximum), 18 loops; against a million-point scan with a separate
+  impedance code path for the filters of examples 1 and 12; refusals.
+- A regression test for each fix above (each fails with 0.6.1).
+- The speedup held against the 0.6.1 code kept in the tests.
+
 ## 0.6.1 (2026-10-18)
 
 Documentation only. No result of the package changes.
