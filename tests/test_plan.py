@@ -64,7 +64,7 @@ def test_refusals():
 
 def test_metadata():
     import fracpll
-    assert fracpll.__version__ == "0.6.1"
+    assert fracpll.__version__ == "0.7.0"
     assert len(fracpll.__all__) == len(set(fracpll.__all__))
     for name in fracpll.__all__:
         assert hasattr(fracpll, name)
