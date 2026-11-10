@@ -147,7 +147,7 @@ simulator.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with fracpll 0.7.0. The circuit values are illustrative
+printed with fracpll 0.8.0. The circuit values are illustrative
 design values, not a recommended design.
 
 ### 1. Is the loop stable?
@@ -644,7 +644,10 @@ Many designs add a resistor R3 and a capacitor C3 after the
 second-order filter, to filter the reference frequency out of the
 control voltage. `third_order_impedance` gives what the loop needs:
 the control voltage at C3 per unit of pump current. Use it in the
-averaged model (`stability`, `open_loop`, `synthesizer_psd`). Keese's
+averaged model (`stability`, `open_loop`, `synthesizer_psd`). Since
+0.8.0 the per-cycle model, the edge-by-edge simulator,
+`reference_spurs` and `margin_uncertainty` take the same section as
+`r3` and `c3` (example 15). Keese's
 note suggests C3 at most C1/10 and R3 at least twice R2, so that the
 new pole does not interact with the main poles of the filter. The last case breaks
 that rule. Its loop phase passes -180 degrees, and the loop is
@@ -727,6 +730,59 @@ bandwidth), since an unstable loop has no locked state. With `r3` and
 section is for; the third tutorial below uses it to meet a spur limit.
 Pass the slope of a measured tuning curve at the lock voltage as
 `kvco_hz_per_v`.
+
+### 15. A third-order filter in a fast loop
+
+```python
+from fracpll import LinearVCO, reference_spurs, sampled_margins, simulate_pll
+
+# The filter of a 4 MHz design with the pump current doubled: the loop
+# now crosses over above f_ref/10, where the averaged model refuses.
+loop = dict(icp=1e-3, kvco_hz_per_v=400e6, n_div=10, f_ref_hz=50e6,
+            c_shunt=8.2e-12, branches=[(1.3e3, 110e-12)])
+pump = dict(i_dn=0.98e-3, i_leak=2e-6, t_reset=100e-12)
+section = dict(r3=10e3, c3=0.82e-12)
+for name, extra in [("second order", {}), ("with R3-C3  ", section)]:
+    m = sampled_margins(**loop, **extra)
+    sp = reference_spurs(**loop, **extra, **pump, n_harmonics=1)
+    print(f"{name}: {m['f_crossover_hz'] / 1e6:.2f} MHz, "
+          f"{m['phase_margin_deg']:.1f} degrees, "
+          f"gain margin {m['gain_margin_db']:.1f} dB, "
+          f"spur at 50 MHz {sp['sideband_dbc'][0]:.1f} dBc")
+
+# The same loop with the section, edge by edge.
+vco = LinearVCO(f0_hz=4.0e8, kvco_hz_per_v=400e6,
+                reference="illustrative design values, not a datasheet")
+run = simulate_pll(vco, n_int=10, f_ref_hz=50e6, icp=1e-3,
+                   c_shunt=8.2e-12, branches=[(1.3e3, 110e-12)],
+                   n_cycles=3000, **pump, **section)
+print(f"locked timing offset: simulated {run.time_error()[-1] * 1e12:.4f} ps, "
+      f"exact {sp['dt_s'] * 1e12:.4f} ps")
+```
+
+```
+second order: 7.69 MHz, 48.1 degrees, gain margin 8.4 dB, spur at 50 MHz -44.6 dBc
+with R3-C3  : 6.77 MHz, 36.7 degrees, gain margin 13.7 dB, spur at 50 MHz -53.6 dBc
+locked timing offset: simulated 38.0000 ps, exact 38.0000 ps
+```
+
+Since 0.8.0 the per-cycle model (`sampled_loop_map`,
+`sampled_stability`, `sampled_open_loop`, `sampled_margins`,
+`simulate_sampled`), the edge-by-edge simulator (`simulate_pll`),
+`reference_spurs` and `margin_uncertainty` all take the R3-C3 section
+of example 12 as `r3` and `c3`. The section is one more series
+resistor-capacitor branch of the same filter network; the only
+difference is that the oscillator is driven by the voltage on C3
+instead of the voltage at the pump. So the exact per-cycle answers of
+examples 5 and 8 now cover third-order filters too, at any loop speed.
+Here the section lowers the 50 MHz spur by 9 dB and raises the gain
+margin by 5 dB, at the cost of 11 degrees of phase margin. The
+averaged model refuses both loops (its crossover is 7.1 MHz without
+the section and 6.6 MHz with it), and in 0.7.0 `reference_spurs`
+refused the loop with the section for the same reason. The last line
+shows the edge-by-edge simulator, run with the section, settling on
+the exact charge-balance offset (`pfd_static_offset`, as in example
+4).
 
 ## Tutorials
 
@@ -815,7 +871,8 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
 - `third_order_impedance(w, c1, r2, c2, r3, c3)` -- the third-order
   filter (an R3-C3 section after the second-order filter), as the
   control voltage per unit of pump current, for the averaged model
-  (example 12).
+  (example 12). The other models take the same section as `r3` and
+  `c3` (example 15).
 - `closed_loop_response(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz)`
   -- the -3 dB bandwidth and the peaking of the closed loop `L/(1+L)`
   (example 13).
@@ -877,8 +934,9 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
 - `margin_uncertainty` -- the standard uncertainty of the loop
   bandwidth and phase margin (and of the gain margin, with
   `model="sampled"`) from the uncertainties of the pump current, Kvco
-  and each filter part, with each input's share and an optional Monte
-  Carlo check (example 10).
+  and each filter part (an R3-C3 section included, with `u_r3` and
+  `u_c3`), with each input's share and an optional Monte Carlo check
+  (example 10).
 
 **Reading measured data**
 
@@ -907,14 +965,16 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
 - `simulate_sampled(..., order=1 or 2)` -- a fast cycle-by-cycle
   noise run; `order=2` adds the pulse-width effect of example 7.
 - `pulse_doublet_vector` -- the building block of that effect.
+- All of these except `pulse_doublet_vector` take an R3-C3 section
+  as `r3` and `c3` (example 15).
 
 **Edge-by-edge simulator**
 
 - `simulate_pll(vco, ...)` with `LinearVCO` or a measured
   `TuningCurve` -- supports a phase detector reset delay, a dead zone,
   unequal UP and DN currents, leakage, negative Kvco, fractional
-  division, optional reference timing noise, and counts skipped cycles
-  (cycle slips).
+  division, optional reference timing noise, an R3-C3 section (`r3`,
+  `c3`), and counts skipped cycles (cycle slips).
 - `SimResult` -- the recorded edge times, control voltage and phase;
   `time_error()`, `nearest_edge_error()` and `phase_rad()` read them.
 - `pfd_static_offset` -- the exact locked timing offset from charge
@@ -973,19 +1033,30 @@ gives its inputs, units and conventions.
 - a filter part is zero, negative or not a number in
   `continuous_closed_loop_poles` (as in every other model);
 - (since 0.7.0) `reference_spurs` is asked about a loop with no locked
-  state: the per-cycle model finds it unstable, or with an R3-C3
-  section the averaged model refuses it, or the phase detector has no
-  locked operating point;
+  state: the per-cycle model finds it unstable (since 0.8.0 also with
+  an R3-C3 section, which 0.7.0 checked with the averaged model), or
+  the phase detector has no locked operating point;
 - (since 0.7.0) `closed_loop_response` finds no peak inside the
   scanned band (for example a filter with no capacitor) or a -3 dB
   point above `f_ref/10`;
 - (since 0.7.0) `pump_polarity` is anything but +1 or -1 (1.5 used to
   run as +1), `simulate_sampled`'s `order` is not 1 or 2, or a
-  simulator is asked for fewer than one reference cycle.
+  simulator is asked for fewer than one reference cycle;
+- (since 0.8.0) a whole number is given as a fraction: `num`, `den`,
+  `n_int`, the MASH order, a number of cycles or steps, or `n_avg`
+  (`n_int=40.5` used to run at N = 40, and `num=3.7` as 3);
+- (since 0.8.0) `simulate_sampled` gets a fraction `num` with
+  `mash_order=0` (it used to run integer-N with no divider phase, as
+  `simulate_pll` already refused);
+- (since 0.8.0) `r3` is given without `c3`, or the reverse, or `r3` is
+  0 in the per-cycle model or the edge-by-edge simulator (C3 is then
+  in parallel with C1: add it to `c_shunt`);
+- (since 0.8.0) a tuning curve is asked about a control voltage that
+  is NaN or infinite (it used to return NaN).
 
 ## How the results are checked
 
-226 automated tests run on every change, on Python 3.9 to 3.14,
+267 automated tests run on every change, on Python 3.9 to 3.14,
 and once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
 (1.8.0) the package allows. Each numerical check compares the package
 with something independent of it: an exact formula, a second
@@ -1191,9 +1262,50 @@ remains the tanh model's estimate. The main checks:
   10^12, margins to 10^-9 degrees and dB, on 4 fixed and 25 random
   loops (on this machine the results were identical, on 300 loops).
 
+**Third-order filter in the per-cycle and edge-by-edge models** (new
+in 0.8.0)
+
+- The per-cycle loop gain with an R3-C3 section equals the averaged
+  loop gain built on `third_order_impedance` summed over all its
+  aliases (the exact identity used for the second-order filter above)
+  to 1 part in 10^10, for the slow loop of example 12 and a fast loop
+  the averaged model refuses (observed: 1 part in 10^13). For the slow
+  loop the margins agree with `stability` to 1 part in 10^6 in
+  bandwidth and 10^-4 degrees (observed: 8 parts in 10^9 and
+  5 x 10^-7 degrees).
+- The margins pass the eigenvalue checks of the second-order filter:
+  the rotated or scaled loop gain puts a pole on the unit circle at
+  the matching frequency (to 10^-8), and in the fast loop the pump
+  current times the gain margin is the current at which the loop
+  becomes unstable (to 1 part in 10^9).
+- At low bandwidth the poles of the per-cycle map are exp(s T) of the
+  roots of the third-order characteristic polynomial, written in the
+  test from the filter's node equations (to 10^-4 of each pole's
+  distance from 1). `continuous_closed_loop_poles` with `r3`
+  and `c3`, which builds its polynomial a different way, gives the
+  same roots to rounding.
+- The edge-by-edge simulator, run with the section, follows the
+  per-cycle map cycle by cycle after a small nudge (to 1 part in 10^6
+  in a slow loop, 10^5 in a fast one), and it settles or grows on the
+  two sides of the stability limit the per-cycle model predicts.
+- With a third-order MASH divider, `simulate_sampled(order=2)` with the
+  section matches the edge-by-edge simulator more than 1000 times more
+  closely than the linear model (two sections), and its pulse widths
+  agree to 10^-15 s.
+- With R3 close to zero the margins become those of the filter with
+  C1 + C3 to ground.
+- In a fast loop with a section, which 0.7.0's `reference_spurs`
+  refused, the spurs equal the separate time-domain calculation in the
+  tests (to 10^-9 of the largest harmonic); the locked offset equals
+  the edge-by-edge simulator's to 1 part in 10^8, and the simulator's
+  C3 voltage equals the time-domain one to 10^-8 of the ripple.
+- `margin_uncertainty` with the section obeys the sum rule of the
+  impedance scaling (to 10^-6), and its per-cycle and averaged
+  answers agree in a slow loop (within 0.2 %).
+
 **Fixes in this version**
 
-- Each fix listed under 0.7.0 below has a test that fails with the
+- Each fix listed under 0.8.0 below has a test that fails with the
   old code and passes with the new.
 
 ## Corrections in earlier versions
@@ -1273,23 +1385,6 @@ extra low-offset noise in the edge-by-edge simulator without a cause.
   error in several functions. These are now refused with a message
   that names the value.
 
-**0.7.0 fixed a crash and tightened input checks.**
-
-- `mash_line_spectrum` crashed with an OverflowError (under NumPy 2)
-  for a modulus `den` of 2^63 or more, which the other divider
-  functions accept. It now sums the phase in Python's whole numbers
-  from `den` = 2^44 on, and gives exactly the same tones as the same
-  fraction written with a small modulus (3/64 and 3 x 2^58 / 2^64,
-  for example).
-- `pump_polarity` was rounded toward zero to a whole number, so 1.5
-  ran as +1 and -1.2 as -1 without a word, in `simulate_pll`,
-  `simulate_sampled`, `sampled_margins`, `sampled_open_loop` and
-  `margin_uncertainty`. Anything but +1 or -1 is now refused.
-  `simulate_sampled(order=2.5)` ran as order 2 and is now refused.
-  `simulate_pll` with zero or fewer cycles returned an empty run, and
-  `simulate_sampled` returned empty arrays or NumPy's "negative
-  dimensions" error; both now say that at least one cycle is needed.
-
 **0.6.0 fixed a wrong stability verdict and three crashes or silent
 NaNs.**
 
@@ -1321,6 +1416,47 @@ NaNs.**
   negative capacitor. `sampled_margins` with `n_grid=1` refused with
   the misleading reason that the loop gain does not cross 1. All are
   now refused with a clear message.
+
+**0.7.0 fixed a crash and tightened input checks.**
+
+- `mash_line_spectrum` crashed with an OverflowError (under NumPy 2)
+  for a modulus `den` of 2^63 or more, which the other divider
+  functions accept. It now sums the phase in Python's whole numbers
+  from `den` = 2^44 on, and gives exactly the same tones as the same
+  fraction written with a small modulus (3/64 and 3 x 2^58 / 2^64,
+  for example).
+- `pump_polarity` was rounded toward zero to a whole number, so 1.5
+  ran as +1 and -1.2 as -1 without a word, in `simulate_pll`,
+  `simulate_sampled`, `sampled_margins`, `sampled_open_loop` and
+  `margin_uncertainty`. Anything but +1 or -1 is now refused.
+  `simulate_sampled(order=2.5)` ran as order 2 and is now refused.
+  `simulate_pll` with zero or fewer cycles returned an empty run, and
+  `simulate_sampled` returned empty arrays or NumPy's "negative
+  dimensions" error; both now say that at least one cycle is needed.
+
+**0.8.0 fixed three kinds of silent error in the inputs.**
+
+- Whole numbers were cut toward zero without a word: `num`, `den`,
+  `n_int`, the MASH order and the numbers of cycles of `simulate_pll`
+  and `simulate_sampled`, the inputs of `mash_sequence`, `mash_period`
+  and `mash_line_spectrum`, the order of `dsm_phase_psd`, and `n_avg`
+  of `jitter_relative_sigma`. So `simulate_pll(..., n_int=40.5)` ran at
+  N = 40 (2.000 GHz instead of 2.025 GHz at 50 MHz), `mash_sequence`
+  with `num=3.7, den=64` gave the pattern of 3/64, `dsm_phase_psd` with
+  order 2.5 gave the second-order spectrum, and `jitter_relative_sigma`
+  with 2.5 averages gave the error bar of 2 averages (2.107 % for the
+  spectrum of example 2, where its 1/sqrt(n) rule gives 1.885 % at
+  2.5). A fraction is now refused. A whole number written as 40.0, as
+  a NumPy integer or as text ("64") is accepted as before.
+- `simulate_sampled` with a fraction `num` and `mash_order=0` (and no
+  `n_int`) ignored `num` and returned an integer-N run with no divider
+  phase at all (`psi` exactly 0). It now refuses, as `simulate_pll`
+  did already.
+- `TuningCurve.frequency` and `.kvco`, and so `TuningFamily`, returned
+  NaN for a NaN control voltage. They now refuse it, as
+  `NoiseSpec.psd` has refused a NaN offset since 0.6.0.
+
+No result of a valid call changes.
 
 The full history is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -1367,10 +1503,15 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   readings with the stated (or a common) standard deviation.
 - `design_loop_filter` designs only the second-order filter, and
   only in the averaged model; its result is exact for the values it
-  returns, not for the rounded parts you buy. `third_order_impedance`
-  works only in the averaged model: the per-cycle model, the
-  edge-by-edge simulator and `margin_uncertainty` take only a
-  capacitor to ground with series resistor-capacitor branches.
+  returns, not for the rounded parts you buy. The R3-C3 section of
+  `third_order_impedance` is the one network beyond a capacitor to
+  ground with series resistor-capacitor branches that the per-cycle
+  model, the edge-by-edge simulator, `reference_spurs` and
+  `margin_uncertainty` take (as `r3` and `c3`);
+  `lock_transient`, `design_loop_filter` and `pulse_doublet_vector`
+  do not take it. With the section, `simulate_sampled(order=2)` is
+  checked against the edge-by-edge simulator for two sections in the
+  loop of example 12, not as widely as without it.
 - `stability` gives the phase margin between -180 and 180 degrees. A
   loop whose phase at the crossover has fallen to -360 degrees or
   below (it takes more extra poles than the third-order filter has)
@@ -1388,9 +1529,8 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   number, the slope at the lock voltage, so the result is exact for a
   straight-line tuning law and a small-ripple estimate for a measured
   curve. The loop is checked for stability with the per-cycle model
-  (with the current of the pump whose pulse the phase error moves);
-  with an R3-C3 section, only the averaged model can check it, so the
-  loop must then be slower than `f_ref/10`. Only the reference spurs
+  (with the current of the pump whose pulse the phase error moves),
+  with or without an R3-C3 section. Only the reference spurs
   from the pump are computed: coupling of the reference into the
   oscillator by other paths is not modeled.
 - `closed_loop_response` uses the averaged model and refuses a -3 dB

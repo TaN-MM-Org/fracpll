@@ -5,6 +5,127 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## 0.8.0 (2026-11-10)
+
+The third-order loop filter (an R3-C3 section) in the per-cycle
+model, the edge-by-edge simulator, `reference_spurs` and
+`margin_uncertainty`, and fixes to three kinds of silent error in the
+inputs.
+
+### Added
+- An R3-C3 section (`r3`, `c3`, both finite and > 0) in
+  `sampled_loop_map`, `sampled_stability`, `sampled_open_loop`,
+  `sampled_margins`, `continuous_closed_loop_poles`,
+  `simulate_sampled` and `simulate_pll`; in 0.7.0 only the averaged
+  model took it (`third_order_impedance`). The section is one more
+  series R-C branch of the filter network, and the oscillator is
+  driven by the voltage on C3 instead of the pump node (new
+  `out` index of the internal `FilterModes`; the closed forms between
+  edges are unchanged, so the simulator stays exact between edges).
+  `simulate_sampled(order=2)` with the section drops the in-pulse
+  ramp term Kvco Icp tau^2/(2 C_shunt), because a pulse into the pump
+  node does not move the C3 voltage during the pulse to first order in
+  its width; the pulse-centroid term and the frequency offset over the
+  pulse are kept. `SimResult.vc_ref` is then the C3 voltage.
+  `continuous_closed_loop_poles` with the section solves
+  s N Y(s) P(s) + Icp Kvco P(s)/(1 + s R3 C3) = 0, the section's
+  factor cancelling in the product.
+- `margin_uncertainty(..., r3=None, c3=None, u_r3=0.0, u_c3=0.0)`: the
+  section and the relative standard uncertainties of its two parts,
+  in both models (inputs named "r3" and "c3").
+- README example 15: the filter of a 4 MHz design with the pump
+  current doubled, so that it crosses over at 7.7 MHz, above f_ref/10:
+  per-cycle margins and the 50 MHz spur with and without a section
+  (48.1 degrees, 8.4 dB and -44.6 dBc; 36.7 degrees, 13.7 dB and
+  -53.6 dBc), and the edge-by-edge simulator run with the section.
+
+### Fixed
+- Whole-number inputs went through int(), which cuts toward zero
+  without a word: `num`, `den`, `n_int`, the MASH order and the cycle
+  counts of `simulate_pll` and `simulate_sampled` (and `quad_nodes`),
+  `num`, `den`, `m`, `n_steps` and `max_period` of `mash_sequence`,
+  `mash_period` and `mash_line_spectrum`, `m` of `dsm_phase_psd`, and
+  `n_avg` of `jitter_relative_sigma`. Before:
+  `simulate_pll(LinearVCO(1.995e9, 20e6, ...), 40.5, 50e6, 100e-6,
+  100e-12, [(4.7e3, 1.5e-9)], n_cycles=50)` ran at N = 40 (`n_ratio`
+  40.0, every count 40, so 2.000 GHz instead of 2.025 GHz);
+  `mash_sequence(3.7, 64, 1, 64)` returned the 3/64 pattern (mean
+  0.046875); `dsm_phase_psd(f, 50e6, 2.5)` equaled the m = 2 spectrum
+  element by element; `jitter_relative_sigma(f, s, 2.5)` on the
+  spectrum of README example 2 returned 0.021075, the value for 2
+  averages (its 1/sqrt(n) rule gives 0.018850 at 2.5). After: each
+  raises ValueError ("must be a whole number"). A whole number written
+  as a float (40.0), a NumPy integer or a string ("64", of any size)
+  is accepted as before, with identical results (checked).
+- `simulate_sampled` with a fraction `num` and `mash_order=0` and no
+  `n_int` ignored `num`: `simulate_sampled(100e-6, 20e6, 40.125, 50e6,
+  100e-12, [(4.7e3, 1.5e-9)], num=1, den=8, mash_order=0,
+  n_cycles=100)` returned `psi` exactly 0 (an integer-N run with no
+  divider phase). It now raises ValueError, as `simulate_pll` already
+  did.
+- `TuningCurve.frequency` and `.kvco` (and so `TuningFamily`) returned
+  NaN for a NaN control voltage, which passed the range check (before,
+  `fit_tuning([0, 1, 2, 3], [4.8e9, 5.2e9, 5.6e9, 6.0e9],
+  ...).frequency(nan)` gave `[nan]`). A NaN or infinite voltage now
+  raises ValueError, as a NaN offset does in `NoiseSpec.psd` since
+  0.6.0.
+
+### Changed
+- `reference_spurs` with an R3-C3 section checks stability with the
+  per-cycle model, as it already did without one; 0.7.0 used the
+  averaged model there, which refuses beyond f_ref/10. The spur values
+  are unchanged, bit for bit (checked). The `check` entry of the result
+  is now {"model": "per-cycle", "spectral_radius"} in every case
+  (before, with the section: {"model": "averaged", "f_crossover_hz",
+  "phase_margin_deg"}). A stable loop with the section above f_ref/10
+  now has its spurs (README example 15's loop: before, refused with
+  "the averaged model cannot confirm a stable lock"; after, -53.6 dBc
+  at 50 MHz); README example 12's unstable loop is still refused, now
+  by the per-cycle model (spectral radius 1.00039). With R3 = 0 the
+  check uses C1 + C3 to ground, the same network.
+- Results: no other result of a valid call changes. All fourteen
+  earlier README examples print what they printed with 0.7.0 (the
+  header now says 0.8.0), and a set of calls without the section
+  (margins, loop gains, maps, both orders of `simulate_sampled`, the
+  edge-by-edge simulator on a straight-line and a measured curve,
+  `reference_spurs`, `margin_uncertainty` with Monte Carlo, line
+  spectra, `design_loop_filter`, the measurement plan) gives
+  identical results to 0.7.0, bit for bit.
+- README: example 15, the new inputs in the function list, refusals,
+  checks, corrections and limits; the corrections of 0.6.0 and 0.7.0
+  are now in order; 267 tests.
+- Tests: `test_spurs.py::test_refusals` now expects the per-cycle
+  refusal message for example 12's unstable loop.
+
+### Tests (267 total, 41 new)
+- The third-order filter in the per-cycle model, against the Poisson
+  (aliasing) sum of the averaged gain built on `third_order_impedance`
+  (1e-10; observed 1e-13), in a slow loop and a fast loop the averaged
+  model refuses; the slow-loop margins against `stability` (1e-6 in
+  bandwidth, 1e-4 degrees; observed 8e-9 and 5e-7); eigenvalue routes
+  for both margins (1e-8); the gain margin against the pump current
+  at the stability limit (1e-9); the poles against exp(s T) of the
+  roots of the characteristic polynomial from the node equations
+  (1e-4 of the distance from 1; observed 1e-8), and
+  `continuous_closed_loop_poles`
+  against the same roots (1e-10); the R3 -> 0 limit.
+- The edge-by-edge simulator with the section against the per-cycle
+  map after a nudge (1e-6 slow, 1e-5 fast; observed 2.7e-8 and 9.2e-7,
+  the latter growing with the nudge, as the pulse-width terms do), and
+  on both sides of the stability limit; `simulate_sampled(order=2)`
+  with the section against the simulator with a MASH-3 divider, two
+  sections (residual below 1e-3 of the linear model's; observed 5e-4
+  and 4e-4, and 1e-2 if the ramp term were kept), pulse widths to
+  1e-15 s; `order=1` against the map.
+- `reference_spurs` with a section in a loop above f_ref/10 against
+  the time-domain steady state of the tests and the simulator (offset
+  1e-8 relative, C3 voltage 1e-8 of the ripple; observed 5e-14 and
+  6e-13); R3 = 0.
+- `margin_uncertainty` with the section: the impedance-scaling sum
+  rule (1e-6; observed 4e-9), per-cycle against averaged in a slow
+  loop (0.2 %; observed 3e-8).
+- A regression test for each fix above (each fails with 0.7.0).
+
 ## 0.7.0 (2026-10-18)
 
 Reference spurs of a locked integer-N loop, the closed-loop bandwidth
