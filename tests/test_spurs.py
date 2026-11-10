@@ -187,6 +187,65 @@ def test_steady_state_equals_the_edge_simulator_and_time_domain(name):
     assert abs(run.vc_ref[-1] - v0) <= 1e-8 * scale
 
 
+def test_fast_loop_with_the_section_against_the_simulator():
+    """0.8.0: with an R3-C3 section the loop is checked by the per-cycle
+    model, so a loop the averaged model refuses (crossover above
+    f_ref/10; 0.7.0 refused it) has its spurs.  Example 5's loop with
+    R3 = 10 kOhm, C3 = 0.2 pF and the simulator run with the same
+    section: the locked offset (observed 5e-14 relative), the
+    harmonics against the time-domain steady state (3e-15 of the
+    largest), and the simulator's C3 voltage at the reference edge
+    against that steady state (6e-13 of the ripple)."""
+    from fracpll import stability
+    loop = dict(icp=0.5e-3, kvco_hz_per_v=400e6, n_div=10, c_shunt=2e-12,
+                branches=[(20e3, 200e-12)], r3=10e3, c3=0.2e-12)
+    kw = dict(i_dn=0.49e-3, i_leak=2e-6, t_reset=100e-12)
+    with pytest.raises(ValueError, match="Gardner"):
+        stability(loop["icp"], loop["kvco_hz_per_v"], loop["n_div"],
+                  lambda w: third_order_impedance(w, 2e-12, 20e3, 200e-12,
+                                                  10e3, 0.2e-12), FR)
+    sp = reference_spurs(FR, **loop, **kw, n_harmonics=3)
+    assert sp["check"]["model"] == "per-cycle"
+    assert sp["check"]["spectral_radius"] == sampled_stability(
+        loop["icp"], loop["kvco_hz_per_v"], loop["n_div"], FR,
+        loop["c_shunt"], loop["branches"], r3=10e3, c3=0.2e-12)[
+            "spectral_radius"]
+    f0 = 4.0e8
+    vco = LinearVCO(f0, loop["kvco_hz_per_v"], "design values for this test")
+    run = simulate_pll(vco, 10, FR, loop["icp"], loop["c_shunt"],
+                       loop["branches"], n_cycles=8000, r3=10e3,
+                       c3=0.2e-12, **kw)
+    dt_sim = run.time_error()[-1]
+    assert sp["dt_s"] == pytest.approx(dt_sim, rel=1e-8, abs=0.0)
+    v_lock = (loop["n_div"] * FR - f0) / loop["kvco_hz_per_v"]
+    rules = (loop["icp"], kw["i_dn"], kw["t_reset"], 0.0, 1)
+    vk, _ = _time_domain(_pulses_here(sp["dt_s"], *rules), kw["i_leak"],
+                         loop["c_shunt"], loop["branches"], 10e3, 0.2e-12,
+                         n_harm=3, v_mean=v_lock)
+    scale = np.max(np.abs(vk))
+    assert np.max(np.abs(sp["ripple_v"] - 2 * np.abs(vk))) \
+        <= 1e-9 * 2 * scale
+    _, v0 = _time_domain(_pulses_here(dt_sim, *rules), kw["i_leak"],
+                         loop["c_shunt"], loop["branches"], 10e3, 0.2e-12,
+                         n_harm=3, v_mean=v_lock)
+    assert abs(run.vc_ref[-1] - run.vc_ref[-2]) <= 1e-8 * scale
+    assert abs(run.vc_ref[-1] - v0) <= 1e-8 * scale
+
+
+def test_section_with_zero_r3_is_checked_as_c3_in_parallel():
+    """R3 = 0 is accepted, as in 0.7.0: C3 then sits in parallel with C1,
+    and the stability check uses that filter."""
+    sp = reference_spurs(FR, **SLOW, c_shunt=100e-12,
+                         branches=[(4.7e3, 1.5e-9)], r3=0.0, c3=10e-12,
+                         i_leak=1e-6)
+    lumped = sampled_stability(SLOW["icp"], SLOW["kvco_hz_per_v"],
+                               SLOW["n_div"], FR, 110e-12, [(4.7e3, 1.5e-9)])
+    assert sp["check"]["spectral_radius"] == lumped["spectral_radius"]
+    same = reference_spurs(FR, **SLOW, c_shunt=110e-12,
+                           branches=[(4.7e3, 1.5e-9)], i_leak=1e-6)
+    assert np.allclose(sp["ripple_v"], same["ripple_v"], rtol=1e-12)
+
+
 THIRD = dict(c_shunt=100e-12, branches=[(4.7e3, 1.5e-9)], r3=10e3,
              c3=10e-12)
 SLOW = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0)
@@ -323,8 +382,11 @@ def test_refusals():
     with pytest.raises(ValueError, match="C must be"):
         reference_spurs(FR, **SLOW, c_shunt=100e-12,
                         branches=[(4.7e3, -1.5e-9)])
-    # example 12's refused third-order loop has no steady state
-    with pytest.raises(ValueError, match="averaged model cannot confirm"):
+    # example 12's refused third-order loop has no steady state (since
+    # 0.8.0 the per-cycle model refuses it; 0.7.0 used the averaged one)
+    with pytest.raises(ValueError,
+                       match="per-cycle loop with the R3-C3 section is "
+                             "unstable"):
         reference_spurs(FR, **SLOW, **base, r3=20e3, c3=1e-9, i_leak=1e-9)
     # the leakage needs more than a full period of pumping
     with pytest.raises(ValueError, match="reference period"):
