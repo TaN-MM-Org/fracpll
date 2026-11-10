@@ -61,6 +61,11 @@ shaped quantization noise into the band and its reduction by an
 offset current (T.-H. Lin, C.-L. Ti and Y.-H. Liu, IEEE Trans.
 Circuits Syst. I 56, 877 (2009)).
 
+Since 0.8.0 the filter may include the R3-C3 section of
+`fracpll.filters.third_order_impedance` (`r3`, `c3`): it is one more
+series branch of the same network, still integrated exactly, and the
+oscillator is then driven by the voltage on C3.
+
 Honest limits: the pump switches instantaneously (apart from the
 dead-zone delay), the divider and PFD are ideal logic apart from the
 stated delays, and the filter elements are linear.  Noise sources other
@@ -78,7 +83,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 
-from ._network import FilterModes
+from ._checks import whole
+from ._network import FilterModes, filter_network
 from .mash import mash_sequence
 from .sampled import _polarity
 
@@ -118,7 +124,9 @@ class SimResult:
     """Everything the edge-level run records, one entry per edge."""
     t_ref: np.ndarray        # reference edge times (s)
     t_div: np.ndarray        # divider edge times (s)
-    vc_ref: np.ndarray       # control voltage at each reference edge (V)
+    vc_ref: np.ndarray       # control voltage at each reference edge (V):
+                             # the voltage that drives the oscillator
+                             # (on C3 when r3 and c3 are given)
     psi_ref: np.ndarray      # oscillator excess phase at each reference
                              # edge, in oscillator CYCLES, relative to the
                              # exact mean ratio (N + num/den) f_ref t
@@ -179,7 +187,8 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
                  t_deadzone: float = 0.0, pump_polarity: int = 1,
                  vc0: float | None = None, phase0_cycles: float = 0.0,
                  ref_jitter_s: ArrayLike | None = None,
-                 quad_nodes: int = 16) -> SimResult:
+                 quad_nodes: int = 16, r3: float | None = None,
+                 c3: float | None = None) -> SimResult:
     """Run the loop edge by edge for n_cycles reference periods.
 
     vco : `LinearVCO` (exact phase) or a `TuningCurve` (measured,
@@ -199,6 +208,14 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
         least n_cycles + 1 entries: entry k moves the reference edge
         nominally at k / f_ref (k = 1 .. n_cycles; entry 0 belongs to
         the start time t = 0, which is not an edge, and is unused).
+    r3, c3 : optional R3-C3 section after the filter (ohm, F, both
+        finite and > 0), as in `third_order_impedance`: the oscillator
+        is then driven by the voltage on C3, and vc0 and `vc_ref` are
+        that voltage.  All filter capacitors start at vc0.
+
+    n_int, num, den, mash_order, n_cycles and quad_nodes must be whole
+    numbers (64.0 is fine); before 0.8.0 a fraction was cut toward zero
+    without a word, so n_int = 40.5 ran at N = 40.
 
     The divider count N + d_k of every divider edge must be at least 1
     (an oscillator cycle); a MASH pattern that asks for less (for
@@ -212,8 +229,9 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
         raise ValueError(f"f_ref_hz must be finite and positive, got "
                          f"{f_ref_hz!r}")
     T = 1.0 / f_ref
-    n_int = int(n_int)
-    num, den, m = int(num), int(den), int(mash_order)
+    n_int = whole(n_int, "n_int")
+    num, den = whole(num, "num"), whole(den, "den")
+    m = whole(mash_order, "mash_order")
     if n_int < 1:
         raise ValueError(f"n_int must be >= 1, got {n_int}")
     if m == 0 and num != 0:
@@ -238,13 +256,15 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
         raise ValueError(f"phase0_cycles must be finite, got {phase0!r}")
     if vc0 is not None and not math.isfinite(float(vc0)):
         raise ValueError(f"vc0 must be finite, got {vc0!r}")
-    if int(quad_nodes) < 1:
+    quad_nodes = whole(quad_nodes, "quad_nodes")
+    if quad_nodes < 1:
         raise ValueError(f"quad_nodes must be >= 1, got {quad_nodes!r}")
-    n_cycles = int(n_cycles)
+    n_cycles = whole(n_cycles, "n_cycles")
     if n_cycles < 1:
         raise ValueError(f"n_cycles must be >= 1, got {n_cycles}")
 
-    fm = FilterModes(c_shunt, branches)
+    br, out = filter_network(c_shunt, branches, r3, c3)
+    fm = FilterModes(c_shunt, br, out)
     linear = isinstance(vco, LinearVCO)
     n_avg = n_int + (num / den if m else 0.0)
     if linear:
@@ -265,7 +285,7 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
             raise ValueError(
                 "pump polarity and the measured Kvco sign give POSITIVE "
                 "feedback: use pump_polarity=-1 for this oscillator")
-        gx, gw = _gl(int(quad_nodes))
+        gx, gw = _gl(quad_nodes)
 
     def pattern(length):
         # the whole pattern from the zero state: a longer one starts

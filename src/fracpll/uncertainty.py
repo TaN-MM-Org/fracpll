@@ -39,6 +39,10 @@ the gain margin moves by exactly -20 log10(1 + u) dB per relative
 change u of Icp; and the Monte Carlo spread agrees with the linear
 propagation for small uncertainties.
 
+Since 0.8.0 the filter may include the R3-C3 section of
+`fracpll.filters.third_order_impedance` (`r3`, `c3`, with relative
+uncertainties `u_r3`, `u_c3`), in both models.
+
 Honest limits: the inputs are taken as uncorrelated; f_ref and N are
 exact.  The answer is only as good as the model behind it
 (`fracpll.stability` or `fracpll.sampled_margins`), and inherits their
@@ -50,6 +54,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from ._network import filter_network
 from .filters import loop_filter_impedance
 from .loop import stability
 from .sampled import _polarity, sampled_margins
@@ -57,13 +62,22 @@ from .sampled import _polarity, sampled_margins
 __all__ = ["margin_uncertainty"]
 
 
-def _evaluate(model, icp, kv, n_div, f_ref, c0, br, pol):
+def _evaluate(model, icp, kv, n_div, f_ref, c0, br, pol, r3=None,
+              c3=None):
     if model == "averaged":
-        zf = lambda w: loop_filter_impedance(w, c0, br)  # noqa: E731
+        if r3 is None:
+            zf = lambda w: loop_filter_impedance(w, c0, br)  # noqa: E731
+        else:
+            # the transimpedance of `third_order_impedance`, for any
+            # number of branches: the node impedance with the R3-C3
+            # branch, times the C3 divider 1 / (1 + j w R3 C3)
+            zf = lambda w: (loop_filter_impedance(  # noqa: E731
+                w, c0, br + [(r3, c3)]) / (1.0 + 1j * w * r3 * c3))
         r = stability(icp, kv, n_div, zf, f_ref)
         return {"f_crossover_hz": r["f_crossover_hz"],
                 "phase_margin_deg": r["phase_margin_deg"]}
-    r = sampled_margins(icp, kv, n_div, f_ref, c0, br, pump_polarity=pol)
+    r = sampled_margins(icp, kv, n_div, f_ref, c0, br, pump_polarity=pol,
+                        r3=r3, c3=c3)
     if not np.isfinite(r["gain_margin_db"]):
         raise ValueError(
             "the per-cycle loop gain has no phase crossover, so the gain "
@@ -82,7 +96,10 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
                        = None,
                        model: str = "averaged", pump_polarity: int = 1,
                        n_mc: int = 0, seed: int | None = None,
-                       max_curvature: float = 0.1) -> dict[str, Any]:
+                       max_curvature: float = 0.1,
+                       r3: float | None = None, c3: float | None = None,
+                       u_r3: float = 0.0, u_c3: float = 0.0
+                       ) -> dict[str, Any]:
     """Standard uncertainty of the loop bandwidth and margins.
 
     icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt, branches : the loop,
@@ -103,6 +120,9 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
     max_curvature : refusal threshold, as a fraction of u_c (default
         0.1), for the curvature of an output over +-1 standard
         uncertainty of any one input.
+    r3, c3 : optional R3-C3 section after the filter (ohm, F, both
+        finite and > 0), as in `third_order_impedance`; u_r3, u_c3 :
+        their relative standard uncertainties.
 
     Returns a dict with
         nominal : the model's outputs at the nominal values;
@@ -118,7 +138,8 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
             "p97.5"}} over the draws.
     Inputs are named "icp", "kvco", "c_shunt", and "branch0_r",
     "branch0_c", "branch1_r", ... for the resistor and capacitor of
-    each branch (counted from 0).
+    each branch (counted from 0), then "r3" and "c3" when the R3-C3
+    section is given.
 
     Refuses (ValueError) when the nominal loop is refused by the model;
     when moving any one input by one standard uncertainty either way
@@ -140,6 +161,12 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
     icp, kv = float(icp), float(kvco_hz_per_v)
     n_div, f_ref, c0 = float(n_div), float(f_ref_hz), float(c_shunt)
     br = [(float(r), float(c)) for r, c in branches]
+    third = r3 is not None or c3 is not None
+    if third:
+        filter_network(c0, br, r3, c3)     # both given, finite, > 0
+        r3, c3 = float(r3), float(c3)
+    elif float(u_r3) != 0.0 or float(u_c3) != 0.0:
+        raise ValueError("u_r3 and u_c3 need the R3-C3 section (r3, c3)")
     if u_branches is None:
         ub = [(0.0, 0.0)] * len(br)
     else:
@@ -154,6 +181,9 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
     for k, (ur, uc) in enumerate(ub):
         names += [f"branch{k}_r", f"branch{k}_c"]
         us += [ur, uc]
+    if third:
+        names += ["r3", "c3"]
+        us += [float(u_r3), float(u_c3)]
     for name, u in zip(names, us):
         if not (np.isfinite(u) and 0.0 <= u < 0.25):
             raise ValueError(
@@ -174,8 +204,12 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
         s = iter(scales)
         a_icp, a_kv, a_c0 = icp * next(s), kv * next(s), c0 * next(s)
         a_br = [(r * next(s), c * next(s)) for r, c in br]
+        if not third:
+            return _evaluate(model, a_icp, a_kv, n_div, f_ref, a_c0, a_br,
+                             pol)
+        a_r3, a_c3 = r3 * next(s), c3 * next(s)
         return _evaluate(model, a_icp, a_kv, n_div, f_ref, a_c0, a_br,
-                         pol)
+                         pol, a_r3, a_c3)
 
     ones = np.ones(len(names))
     y0 = run(ones)

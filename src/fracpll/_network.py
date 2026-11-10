@@ -22,6 +22,16 @@ the edges of an event-driven simulation), each mode then has a closed
 form, and so do the control voltage and its time integral -- which is
 what makes the edge-level simulator of `fracpll.eventsim` exact for a
 linear VCO rather than time-stepped.
+
+The third-order filter (an R3-C3 section after the second-order
+filter, `fracpll.filters.third_order_impedance`) is the same star
+network: R3 in series with C3 is one more series branch from the pump
+node to ground.  The only difference is which voltage drives the
+oscillator: the voltage on C3 instead of the pump node.  Since 0.8.0
+`FilterModes` takes that choice as `out` (the index of the capacitor
+whose voltage is the control voltage: 0 for the pump node, k for the
+capacitor of branch k), and `filter_network` builds the branches and
+`out` from (c_shunt, branches, r3, c3).
 """
 from __future__ import annotations
 
@@ -32,10 +42,37 @@ import numpy as np
 __all__ = []
 
 
-class FilterModes:
-    """Modal closed forms of the shunt-C + series-RC loop filter."""
+def filter_network(c_shunt, branches=(), r3=None, c3=None):
+    """(branches, out) of the star network, with the R3-C3 section as
+    the last branch when r3 and c3 are given.
 
-    def __init__(self, c_shunt, branches=()):
+    out is the index of the capacitor that drives the oscillator: 0 (the
+    pump node) without the section, the C3 branch with it.  r3 and c3
+    come together; r3 must be finite and > 0 here (with R3 = 0, C3 is in
+    parallel with C1: add it to c_shunt), c3 finite and > 0."""
+    br = [(float(r), float(c)) for r, c in branches]
+    if (r3 is None) != (c3 is None):
+        raise ValueError("give both r3 and c3 for the third-order "
+                         "section, or neither")
+    if r3 is None:
+        return br, 0
+    r3, c3 = float(r3), float(c3)
+    if not (math.isfinite(r3) and r3 > 0.0):
+        raise ValueError(
+            f"r3 must be finite and > 0, got {r3!r} (with R3 = 0, C3 is "
+            "in parallel with C1: add it to c_shunt)")
+    if not (math.isfinite(c3) and c3 > 0.0):
+        raise ValueError(f"c3 must be finite and positive, got {c3!r}")
+    return br + [(r3, c3)], len(br) + 1
+
+
+class FilterModes:
+    """Modal closed forms of the shunt-C + series-RC loop filter.
+
+    out : index of the capacitor whose voltage drives the oscillator
+        (0, the pump node, by default; see `filter_network`)."""
+
+    def __init__(self, c_shunt, branches=(), out=0):
         c0 = float(c_shunt)
         if not (np.isfinite(c0) and c0 > 0.0):
             raise ValueError("c_shunt must be finite and positive")
@@ -73,14 +110,20 @@ class FilterModes:
                 continue
             v = q[:, j] - (q[:, j] @ z) * z
             q[:, j] = v / np.linalg.norm(v)
+        out = int(out)
+        if not 0 <= out < n:
+            raise ValueError(f"internal: output node {out} of {n}")
         self.caps = cap
         self.g = g
         self.mu = [float(m) for m in mu]
         self.q = q
         # input: current into node 0 -> dy0/dt += i / sqrt(C0)
         self.beta = [float(q[0, j] / math.sqrt(c0)) for j in range(n)]
-        # output: v_c = x0 = y0 / sqrt(C0)
-        self.gamma = [float(q[0, j] / math.sqrt(c0)) for j in range(n)]
+        # output: v_c = x_out = y_out / sqrt(C_out)
+        c_out = float(cap[out])
+        self.gamma = [float(q[out, j] / math.sqrt(c_out))
+                      for j in range(n)]
+        self.out = out
         self.n = n
         self.zero_mode = i0
 
@@ -100,7 +143,7 @@ class FilterModes:
         b = np.zeros(self.n)
         b[0] = 1.0 / self.caps[0]
         c = np.zeros(self.n)
-        c[0] = 1.0
+        c[self.out] = 1.0
         return a, b, c
 
     # -- closed forms under constant current i over [0, t] ----------

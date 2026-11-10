@@ -25,6 +25,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ._checks import whole
+
 __all__ = ["jitter_relative_sigma", "averages_for_jitter"]
 
 
@@ -48,10 +50,11 @@ def jitter_relative_sigma(f_hz: ArrayLike, s_out: ArrayLike,
     f_hz : offset grid (Hz), increasing; each point is one analyzer
         reading, averaged n_avg times, independent of the others.
     s_out : one-sided phase-noise PSD on that grid (rad^2/Hz).
-    n_avg : number of averages (>= 1).
+    n_avg : number of averages, a whole number >= 1 (before 0.8.0 a
+        fraction such as 2.5 was cut to 2 without a word).
     Returns sigma(J)/J, dimensionless.
     """
-    n = int(n_avg)
+    n = whole(n_avg, "n_avg")
     if n < 1:
         raise ValueError(f"n_avg must be >= 1, got {n_avg!r}")
     s = np.asarray(s_out, dtype=float)

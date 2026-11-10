@@ -51,9 +51,10 @@ width every cycle); the pump switches instantly apart from the stated
 delays, as in `simulate_pll`; Kvco is the slope at the lock voltage,
 so the result is exact for a straight-line tuning law and a
 small-ripple approximation for a measured curve.  The loop must be
-locked and stable: without r3 and c3 this is checked with the exact
-per-cycle model (`sampled_stability`), at any bandwidth; with them,
-with the averaged model (`stability`), which refuses beyond f_ref/10.
+locked and stable: this is checked with the exact per-cycle model
+(`sampled_stability`), at any bandwidth, also with the R3-C3 section
+since 0.8.0 (before, the section was checked with the averaged model,
+`stability`, which refuses beyond f_ref/10).
 """
 from __future__ import annotations
 
@@ -63,7 +64,6 @@ from typing import Any, Sequence
 import numpy as np
 
 from .filters import loop_filter_impedance
-from .loop import stability
 from .mash import _small_angle_dbc
 from .pfd import pfd_static_offset
 from .sampled import _polarity, sampled_stability
@@ -133,18 +133,20 @@ def reference_spurs(f_ref_hz: float, icp: float, kvco_hz_per_v: float,
         ripple_v : amplitude (peak) of the control-voltage ripple at
             each harmonic (V);
         dt_s : the locked divider-minus-reference timing offset (s);
-        check : how stability was checked ("per-cycle" with the
-            spectral radius, or "averaged" with the crossover and
-            phase margin).
+        check : how stability was checked: {"model": "per-cycle",
+            "spectral_radius": ...} (since 0.8.0 also with r3 and c3;
+            0.7.0 checked the section with the averaged model and gave
+            {"model": "averaged", "f_crossover_hz", "phase_margin_deg"}).
 
     Refuses what `pfd_static_offset` refuses (no locked operating
     point), non-finite or non-physical inputs, a pump polarity and Kvco
     sign that give positive feedback, r3 without c3 (or the reverse),
-    and a loop that is not stable (or, with r3 and c3, that the averaged
-    model cannot judge): it has no periodic steady state.  The stability
-    check uses the pump current whose pulse the phase error moves: UP
-    when the reference edge leads, DN when the divider edge leads, both
-    when the offset is exactly zero.
+    and a loop that the per-cycle model finds unstable: it has no
+    periodic steady state.  The stability check uses the pump current
+    whose pulse the phase error moves: UP when the reference edge leads,
+    DN when the divider edge leads, both when the offset is exactly
+    zero.  With R3 = 0, C3 is in parallel with C1, and the check uses
+    the filter with C1 + C3 to ground.
     """
     f_ref = float(f_ref_hz)
     icp = float(icp)
@@ -189,29 +191,28 @@ def reference_spurs(f_ref_hz: float, icp: float, kvco_hz_per_v: float,
     dt, pulses = _pulses(f_ref, icp, idn, float(i_leak), float(t_reset),
                          float(t_deadzone), pol)
 
-    # the loop must be locked and stable for a periodic steady state
-    gains = [icp, idn] if dt == 0.0 else [icp if dt > 0.0 else idn]
+    # the loop must be locked and stable for a periodic steady state.
+    # The per-cycle model takes the R3-C3 section since 0.8.0; with
+    # R3 = 0 the section is C3 in parallel with C1.
     if r3 is None:
-        for g in gains:
-            st = sampled_stability(g, kv, nd, f_ref, c_shunt, br, pol)
-            if not st["stable"]:
-                raise ValueError(
-                    f"the per-cycle loop is unstable (spectral radius "
-                    f"{st['spectral_radius']:.6g} with a pump current of "
-                    f"{g:.4g} A): it has no locked steady state, so no "
-                    "reference spur to report")
-        check = {"model": "per-cycle",
-                 "spectral_radius": st["spectral_radius"]}
+        net = dict(c_shunt=c_shunt)
+    elif r3 == 0.0:
+        net = dict(c_shunt=float(c_shunt) + c3)
     else:
-        for g in gains:
-            try:
-                rep = stability(g, abs(kv), nd, zfilter, f_ref)
-            except ValueError as err:
-                raise ValueError(
-                    f"the averaged model cannot confirm a stable lock "
-                    f"with the R3-C3 section ({err}); without a stable "
-                    "lock there is no reference spur to report") from None
-        check = {"model": "averaged", **rep}
+        net = dict(c_shunt=c_shunt, r3=r3, c3=c3)
+    gains = [icp, idn] if dt == 0.0 else [icp if dt > 0.0 else idn]
+    for g in gains:
+        st = sampled_stability(g, kv, nd, f_ref, branches=br,
+                               pump_polarity=pol, **net)
+        if not st["stable"]:
+            section = "" if r3 is None else " with the R3-C3 section"
+            raise ValueError(
+                f"the per-cycle loop{section} is unstable (spectral "
+                f"radius {st['spectral_radius']:.6g} with a pump current "
+                f"of {g:.4g} A): it has no locked steady state, so no "
+                "reference spur to report")
+    check = {"model": "per-cycle",
+             "spectral_radius": st["spectral_radius"]}
 
     k = np.arange(1, nh + 1)
     w = 2.0 * math.pi * f_ref * k

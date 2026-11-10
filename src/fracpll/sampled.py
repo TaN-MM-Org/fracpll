@@ -44,6 +44,15 @@ aliased sum of the averaged gain, sum_m L(j(w + m 2 pi f_ref)), the
 margins against eigenvalue routes, and G/(1+G) against the per-cycle
 simulation in the time domain.
 
+Since 0.8.0 every function here (except `pulse_doublet_vector`) also
+takes the third-order filter of `fracpll.filters.third_order_impedance`
+through `r3` and `c3`: the R3-C3 section is one more series branch of
+the filter network, and the oscillator is driven by the voltage on C3
+instead of the pump node (see `fracpll._network`).  The tests hold G
+with the section against the aliased sum of the averaged gain built on
+`third_order_impedance`, and the per-cycle map against the edge-level
+simulator run with the same section.
+
 Honest limits: this is the SMALL-SIGNAL map about lock, with matched
 pumps and no dead zone (a dead zone has zero gain at the origin, so
 there is nothing to linearise; `fracpll.eventsim` handles it).  It
@@ -60,7 +69,8 @@ from numpy.typing import ArrayLike
 from scipy.linalg import expm
 from scipy.optimize import brentq
 
-from ._network import FilterModes
+from ._checks import whole
+from ._network import FilterModes, filter_network
 
 __all__ = ["sampled_loop_map", "sampled_stability",
            "sampled_open_loop", "sampled_margins",
@@ -93,8 +103,14 @@ def _check_loop(icp, kv, nd, f_ref):
 def sampled_loop_map(icp: float, kvco_hz_per_v: float, n_div: float,
                      f_ref_hz: float, c_shunt: float,
                      branches: Sequence[tuple[float, float]] = (),
-                     pump_polarity: int = 1) -> dict[str, np.ndarray]:
+                     pump_polarity: int = 1, r3: float | None = None,
+                     c3: float | None = None) -> dict[str, np.ndarray]:
     """The one-period map s_{k+1} = F s_k, s = [x..., psi (cycles)].
+
+    r3, c3 : optional R3-C3 section after the filter (ohm, F, both
+        finite and > 0), as in `third_order_impedance`; the oscillator
+        is then driven by the voltage on C3, which is the last filter
+        state, just before psi.
 
     Returns dict(F, Phi, kick) with F = Phi @ kick.
     """
@@ -106,7 +122,8 @@ def sampled_loop_map(icp: float, kvco_hz_per_v: float, n_div: float,
         raise ValueError("pump polarity and Kvco sign give positive "
                          "feedback; use pump_polarity=-1 for a "
                          "negative-Kvco oscillator")
-    fm = FilterModes(c_shunt, branches)
+    br, out = filter_network(c_shunt, branches, r3, c3)
+    fm = FilterModes(c_shunt, br, out)
     a, b, c = fm.state_matrices()
     n = fm.n
     M = np.zeros((n + 1, n + 1))
@@ -121,8 +138,11 @@ def sampled_loop_map(icp: float, kvco_hz_per_v: float, n_div: float,
 def sampled_stability(icp: float, kvco_hz_per_v: float, n_div: float,
                       f_ref_hz: float, c_shunt: float,
                       branches: Sequence[tuple[float, float]] = (),
-                      pump_polarity: int = 1) -> dict[str, Any]:
+                      pump_polarity: int = 1, r3: float | None = None,
+                      c3: float | None = None) -> dict[str, Any]:
     """Exact small-signal stability at ANY bandwidth.
+
+    r3, c3 : optional R3-C3 section, as for `sampled_loop_map`.
 
     Returns dict(stable, spectral_radius, poles).  Stable means every
     pole of the one-period map lies strictly inside the unit circle.
@@ -132,7 +152,7 @@ def sampled_stability(icp: float, kvco_hz_per_v: float, n_div: float,
     has constant term Icp*Kvco != 0, hence no root at s = 0.)
     """
     F = sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
-                         branches, pump_polarity)["F"]
+                         branches, pump_polarity, r3, c3)["F"]
     z = np.linalg.eigvals(F)
     rho = float(np.max(np.abs(z)))
     return {"stable": bool(rho < 1.0), "spectral_radius": rho,
@@ -142,7 +162,8 @@ def sampled_stability(icp: float, kvco_hz_per_v: float, n_div: float,
 def sampled_open_loop(f_hz: ArrayLike, icp: float, kvco_hz_per_v: float,
                       n_div: float, f_ref_hz: float, c_shunt: float,
                       branches: Sequence[tuple[float, float]] = (),
-                      pump_polarity: int = 1) -> np.ndarray:
+                      pump_polarity: int = 1, r3: float | None = None,
+                      c3: float | None = None) -> np.ndarray:
     """Exact per-cycle open-loop gain G(z) on the unit circle.
 
     Breaking the loop of `sampled_loop_map` at the phase detector, a
@@ -167,6 +188,10 @@ def sampled_open_loop(f_hz: ArrayLike, icp: float, kvco_hz_per_v: float,
     Sign convention: as in `sampled_loop_map`, pass the signed Kvco
     with pump_polarity=-1 for a negative-Kvco oscillator; G then equals
     the positive-Kvco loop of the same |Kvco|.
+
+    r3, c3 : optional R3-C3 section (ohm, F), as for
+    `sampled_loop_map`.  G is then the aliased sum of the averaged gain
+    built on `third_order_impedance`.
     """
     f = np.atleast_1d(np.asarray(f_hz, dtype=float))
     f_ref = float(f_ref_hz)
@@ -179,16 +204,17 @@ def sampled_open_loop(f_hz: ArrayLike, icp: float, kvco_hz_per_v: float,
                          "Nyquist (f and f_ref - f are the same point "
                          "of the unit circle)")
     m, PB, k = _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
-                           branches, pump_polarity)
+                           branches, pump_polarity, r3, c3)
     return _gain_at(f, m["Phi"], PB, k, f_ref)
 
 
 def _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt, branches,
-                pump_polarity):
+                pump_polarity, r3=None, c3=None):
     """The loop map, Phi B and the gain factor pol Icp/(N f_ref) of G."""
     m = sampled_loop_map(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
-                         branches, pump_polarity)
-    b = FilterModes(c_shunt, branches).state_matrices()[1]
+                         branches, pump_polarity, r3, c3)
+    br, out = filter_network(c_shunt, branches, r3, c3)
+    b = FilterModes(c_shunt, br, out).state_matrices()[1]
     PB = m["Phi"] @ np.r_[b, 0.0]
     k = _polarity(pump_polarity) * float(icp) / (float(n_div) * f_ref)
     return m, PB, k
@@ -209,7 +235,8 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
                     f_ref_hz: float, c_shunt: float,
                     branches: Sequence[tuple[float, float]] = (),
                     pump_polarity: int = 1, f_lo: float | None = None,
-                    n_grid: int = 4001) -> dict[str, Any]:
+                    n_grid: int = 4001, r3: float | None = None,
+                    c3: float | None = None) -> dict[str, Any]:
     """Phase margin and gain margin of the exact per-cycle loop.
 
     Works at ANY loop bandwidth, including the fast loops that
@@ -233,12 +260,17 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
       map (`sampled_stability`) -- the authority on stability; the
       margins say how far the loop is from losing it.
 
+    r3, c3 : optional R3-C3 section (ohm, F), as for
+    `sampled_loop_map`.
+
     Refuses when |G| does not fall through 1 between f_lo and f_ref/2,
     in particular when |G| >= 1 still at f_ref/2.  Such a loop is
     unstable: for this filter family every alias term of G(-1) has a
-    negative real part (the filter impedance is capacitive), so
-    G(-1) <= -1, and a Schur-stable characteristic polynomial p of
-    degree d needs (-1)^d p(-1) > 0, i.e. 1 + G(-1) > 0 here.
+    negative real part (the filter impedance is capacitive; with the
+    R3-C3 section the phase of the transimpedance stays between -180
+    and 0 degrees, so the same holds), so G(-1) <= -1, and a
+    Schur-stable characteristic polynomial p of degree d needs
+    (-1)^d p(-1) > 0, i.e. 1 + G(-1) > 0 here.
 
     Honest limits: the same small-signal model as `sampled_loop_map`
     (matched pumps, no dead zone, constant Kvco, linear in the pulse
@@ -260,7 +292,7 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
     # it, and the final stability check built it once more).  Each G
     # value is computed by the same operations as `sampled_open_loop`.
     m, PB, k = _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
-                           branches, pump_polarity)
+                           branches, pump_polarity, r3, c3)
     Phi = m["Phi"]
     g = _gain_at(f, Phi, PB, k, f_ref)
     mag = np.abs(g)
@@ -324,8 +356,9 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
 
 def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
                                  n_div: float, c_shunt: float,
-                                 branches: Sequence[tuple[float, float]] = ()
-                                 ) -> np.ndarray:
+                                 branches: Sequence[tuple[float, float]] = (),
+                                 r3: float | None = None,
+                                 c3: float | None = None) -> np.ndarray:
     """Roots of 1 + L(s) = 0 for the averaged model (rad/s).
 
     With Z = 1/Y and Y(s) = s C0 + sum_k s C_k / (1 + s R_k C_k),
@@ -334,6 +367,12 @@ def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
     Used to show the sampled map reduces to the averaged model at low
     bandwidth (z = exp(s T)).  Like `fracpll.loop.open_loop`, it takes
     the magnitude |Kvco| the loop sees and refuses a negative value.
+
+    r3, c3 : optional R3-C3 section (since 0.8.0), as for
+    `sampled_loop_map`.  The section is one more branch of Y and of the
+    product, and the transimpedance is Z / (1 + s R3 C3); that factor
+    cancels the section's own factor in the product, so the second term
+    keeps only the product over the other branches.
     """
     if not (np.isfinite(float(kvco_hz_per_v)) and float(kvco_hz_per_v) > 0.0):
         raise ValueError("pass the magnitude |Kvco| (> 0) the loop sees; "
@@ -348,7 +387,7 @@ def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
     # a negative capacitor returned the poles of a non-physical filter)
     from .filters import loop_filter_impedance
     loop_filter_impedance(1.0, c_shunt, branches)
-    branches = [(float(r), float(c)) for r, c in branches]
+    branches, out = filter_network(c_shunt, branches, r3, c3)
     P = np.poly1d([1.0])
     for r, cc in branches:
         P = P * np.poly1d([r * cc, 1.0])
@@ -359,6 +398,10 @@ def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
             if m != k:
                 others = others * np.poly1d([r2 * c2, 1.0])
         Ypoly = Ypoly + np.poly1d([cc, 0.0]) * others
+    if out:          # Z/(1 + s R3 C3): drop the section from the product
+        P = np.poly1d([1.0])
+        for r, cc in branches[:-1]:
+            P = P * np.poly1d([r * cc, 1.0])
     char = np.poly1d([float(n_div), 0.0]) * Ypoly \
         + float(icp) * float(kvco_hz_per_v) * P
     return np.roots(char.coeffs)
@@ -401,7 +444,8 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
                      n_int: int | None = None, num: int = 0, den: int = 2,
                      mash_order: int = 0, n_cycles: int | None = None,
                      order: int = 2,
-                     pump_polarity: int = 1) -> dict[str, np.ndarray]:
+                     pump_polarity: int = 1, r3: float | None = None,
+                     c3: float | None = None) -> dict[str, np.ndarray]:
     """Fast per-cycle simulation of the charge-pump loop, to 1st or 2nd
     order in the PFD pulse width.
 
@@ -429,7 +473,18 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
     divider phase in oscillator cycles, aligned with the k-th reference
     edge as in `simulate_pll`), or n_int/num/den/mash_order/n_cycles to
     generate it from `fracpll.mash.mash_sequence`.  n_div is the MEAN
-    ratio N + num/den.
+    ratio N + num/den.  n_int, num, den, mash_order and n_cycles must
+    be whole numbers, and a fraction num needs mash_order 1, 2 or 3 (as
+    in `simulate_pll`; before 0.8.0 a fraction was cut toward zero, and
+    num with mash_order=0 ran as integer-N with no divider phase).
+
+    r3, c3 : optional R3-C3 section (ohm, F), as for
+    `sampled_loop_map`.  With it the oscillator is driven by the voltage
+    on C3, which a pump pulse does not move during the pulse; order=2
+    then keeps the oscillator's frequency offset over the pulse and the
+    pulse-centroid correction, and the in-pulse ramp term (Kvco Icp
+    tau^2 / (2 C_shunt) at the pump node) is absent.  The tests hold it
+    against the edge-level simulator run with the same section.
 
     Returns dict(psi, tau): oscillator excess phase at each reference
     edge (cycles) and the pulse width divider-minus-reference (s).
@@ -454,16 +509,23 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
             raise ValueError("pass u_cycles, or num/den/mash_order and "
                              "n_cycles")
         from .mash import mash_sequence
-        if int(n_cycles) < 1:
+        nc = whole(n_cycles, "n_cycles")
+        if nc < 1:
             raise ValueError(f"n_cycles must be >= 1, got {n_cycles!r}")
-        m = int(mash_order)
+        m = whole(mash_order, "mash_order")
+        num_i, den_i = whole(num, "num"), whole(den, "den")
         if m == 0:
-            u = np.zeros(int(n_cycles))
+            if num_i != 0:
+                raise ValueError(
+                    "a fractional part needs mash_order 1, 2 or 3 (with "
+                    "mash_order=0 before 0.8.0 num was ignored and the "
+                    "run had no divider phase at all)")
+            u = np.zeros(nc)
         else:
-            d = mash_sequence(int(num), int(den), m, int(n_cycles) + 4)
-            u = np.cumsum(d - int(num) / int(den))[:int(n_cycles)]
+            d = mash_sequence(num_i, den_i, m, nc + 4)
+            u = np.cumsum(d - num_i / den_i)[:nc]
         if n_int is not None and not np.isclose(
-                nd, int(n_int) + (int(num) / int(den) if m else 0.0)):
+                nd, whole(n_int, "n_int") + (num_i / den_i if m else 0.0)):
             raise ValueError("n_div must equal n_int + num/den (the mean "
                              "division ratio)")
     else:
@@ -471,7 +533,8 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
         if not np.all(np.isfinite(u)):
             raise ValueError("u_cycles must be finite (a NaN used to "
                              "propagate silently into psi before 0.6.0)")
-    fm = FilterModes(c_shunt, branches)
+    br, out = filter_network(c_shunt, branches, r3, c3)
+    fm = FilterModes(c_shunt, br, out)
     a, b, c = fm.state_matrices()
     n = fm.n
     M = np.zeros((n + 1, n + 1))
@@ -483,18 +546,25 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
     c0 = float(c_shunt)
     two = int(order) == 2
     psi, taus = _sampled_loop(Phi, B, MB, u, kv, pol, icp, nd * f_ref,
-                              c0, two)
+                              c0, two, out)
     return {"psi": psi, "tau": taus}
 
 
-def _sampled_loop(Phi, B, MB, u, kv, pol, icp, nf, c0, two):
+def _sampled_loop(Phi, B, MB, u, kv, pol, icp, nf, c0, two, out=0):
     """The cycle loop of `simulate_sampled`, on Python floats.
 
     Same operations, in the same order, as the NumPy-array loop of
     0.5.0 (kept in the tests as the reference); only the matrix-vector
     product Phi s is summed in a fixed order here, so the results agree
     to rounding (the tests ask 1e-12 of the largest |psi|) and the loop
-    runs several times faster for the small state of a loop filter."""
+    runs several times faster for the small state of a loop filter.
+
+    out is the filter state that drives the oscillator (0, the pump
+    node, unless an R3-C3 section is present).  With out = 0 the
+    operations are those of 0.7.0, unchanged; with the section the
+    oscillator reads s[out], and the in-pulse ramp term is absent,
+    because a pulse into the pump node does not move the C3 voltage
+    during the pulse to first order in its width."""
     rows = [[float(x) for x in r] for r in np.asarray(Phi)]
     nn = len(rows)
     last = nn - 1
@@ -514,8 +584,8 @@ def _sampled_loop(Phi, B, MB, u, kv, pol, icp, nf, c0, two):
         uk = uu[k]
         tau = (uk - s[last]) / nf
         if two:
-            dpsi = kv * s[0] * tau
-            if tau > 0.0:
+            dpsi = kv * s[out] * tau
+            if tau > 0.0 and out == 0:
                 dpsi += kv * pol * icp * tau * tau / (2.0 * c0)
             tau = (uk - s[last] - dpsi) / nf
             cv = -(q * tau * tau / 2.0)

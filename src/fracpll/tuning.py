@@ -59,6 +59,11 @@ class TuningCurve:
 
     def _check(self, vc):
         v = np.atleast_1d(np.asarray(vc, dtype=float))
+        if not np.all(np.isfinite(v)):
+            # a NaN passed the range test below and came back as a NaN
+            # frequency or Kvco before 0.8.0
+            raise ValueError("control voltage must be finite, got "
+                             f"{vc!r}")
         lo, hi = self.vc[0], self.vc[-1]
         if np.any(v < lo - 1e-12) or np.any(v > hi + 1e-12):
             raise ValueError(

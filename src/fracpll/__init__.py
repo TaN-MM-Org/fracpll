@@ -28,6 +28,10 @@ section (`third_order_impedance`) for the averaged model.  Version 0.7
 adds the reference spurs of a locked integer-N loop from leakage, pump
 mismatch, reset delay and dead zone (`reference_spurs`) and the
 closed-loop -3 dB bandwidth and peaking (`closed_loop_response`).
+Version 0.8 takes the third-order filter (an R3-C3 section, `r3` and
+`c3`) into the per-cycle model, the edge-by-edge simulator,
+`reference_spurs` and `margin_uncertainty`, and refuses whole-number
+inputs given as fractions instead of cutting them.
 """
 
 from .design import design_loop_filter
@@ -51,7 +55,7 @@ from .spurs import reference_spurs
 from .tuning import TuningCurve, TuningFamily, fit_linear_vco, fit_tuning
 from .uncertainty import margin_uncertainty
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",

@@ -62,6 +62,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ._checks import whole
+
 __all__ = ["mash_sequence", "dsm_phase_psd", "MASH_RANGE",
            "mash_period", "mash_line_spectrum"]
 
@@ -78,8 +80,13 @@ def mash_sequence(num: int, den: int, m: int, n_steps: int) -> np.ndarray:
 
     Accumulators start at zero.  Returns an int64 array; add it to the
     integer part N to get the per-cycle division ratio.
+
+    num, den, m and n_steps must be whole numbers (a float such as 64.0
+    is fine); before 0.8.0 a fraction was cut toward zero without a
+    word, so num = 3.7 ran as 3.
     """
-    num, den, m, n_steps = int(num), int(den), int(m), int(n_steps)
+    num, den = whole(num, "num"), whole(den, "den")
+    m, n_steps = whole(m, "MASH order m"), whole(n_steps, "n_steps")
     if den < 2 or not (0 <= num < den):
         raise ValueError("need integers 0 <= num < den with den >= 2")
     if m not in (1, 2, 3):
@@ -163,7 +170,7 @@ def dsm_phase_psd(f_hz: ArrayLike, f_ref_hz: float, m: int) -> np.ndarray:
     does not describe it (see the module docstring; our simulation
     shows the failure directly).
     """
-    m = int(m)
+    m = whole(m, "MASH order m")
     if m == 1:
         raise ValueError(
             "a first-order accumulator produces discrete spurs, not "
@@ -217,10 +224,11 @@ def mash_period(num: int, den: int, m: int,
     returns to zero; the first return is the period.  Refuses beyond
     `max_period` rather than guessing.
     """
-    num, den, m = int(num), int(den), int(m)
+    num, den = whole(num, "num"), whole(den, "den")
+    m = whole(m, "MASH order m")
     if den < 2 or not (0 <= num < den) or m not in (1, 2, 3):
         raise ValueError("need 0 <= num < den, den >= 2, m in {1,2,3}")
-    kmax = int(max_period)
+    kmax = whole(max_period, "max_period")
     if den < _VEC_DEN_MAX:
         state = [0] * m
         for k0 in range(0, kmax, _CHUNK):
@@ -262,7 +270,9 @@ def mash_line_spectrum(num: int, den: int, m: int, f_ref_hz: float,
     the phase variance, which the line powers sum to exactly
     (Parseval; asserted in the tests).
     """
-    P = mash_period(num, den, m, max_period)
+    P = mash_period(num, den, m, max_period)       # checks num, den, m
+    num, den = whole(num, "num"), whole(den, "den")
+    m = whole(m, "MASH order m")
     f_ref = float(f_ref_hz)
     if not (np.isfinite(f_ref) and f_ref > 0.0):
         raise ValueError("f_ref_hz must be finite and positive")
