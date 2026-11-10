@@ -240,7 +240,10 @@ def test_section_with_zero_r3_is_checked_as_c3_in_parallel():
                          i_leak=1e-6)
     lumped = sampled_stability(SLOW["icp"], SLOW["kvco_hz_per_v"],
                                SLOW["n_div"], FR, 110e-12, [(4.7e3, 1.5e-9)])
-    assert sp["check"]["spectral_radius"] == lumped["spectral_radius"]
+    # 100 pF + 10 pF and 110 pF agree only to rounding, so compare to a
+    # relative 1e-12 (observed: one unit in the last place)
+    assert sp["check"]["spectral_radius"] == pytest.approx(
+        lumped["spectral_radius"], rel=1e-12, abs=0.0)
     same = reference_spurs(FR, **SLOW, c_shunt=110e-12,
                            branches=[(4.7e3, 1.5e-9)], i_leak=1e-6)
     assert np.allclose(sp["ripple_v"], same["ripple_v"], rtol=1e-12)
