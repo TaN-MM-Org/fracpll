@@ -5,6 +5,190 @@ form, an exact identity, two independent code paths, or seeded
 simulation against an exact formula; the release notes on GitHub
 carry the full anchor lists.
 
+## 0.9.0 (2026-11-25)
+
+The closed-loop bandwidth and peaking of the per-cycle loop, the
+design of the third-order filter, the R3-C3 section in
+`lock_transient` and `pulse_doublet_vector`, correlated inputs in
+`margin_uncertainty`, files with a decimal comma, a measurement plan
+for the log-log jitter rule, and a fix to a wrong stability verdict.
+
+### Added
+- `sampled_closed_loop_response(icp, kvco_hz_per_v, n_div, f_ref_hz,
+  c_shunt, branches=(), pump_polarity=1, f_lo=None, n_grid=4001,
+  r3=None, c3=None)` (in `fracpll.sampled`): the -3 dB bandwidth and
+  the peaking of G/(1+G), G the exact per-cycle loop gain of
+  `sampled_open_loop`, at any loop bandwidth, with the margins of
+  `sampled_margins`. It is the response of the oscillator phase at the
+  reference edges, defined up to f_ref/2. Refused: what
+  `sampled_margins` refuses, an unstable loop, a largest response at
+  the low end of the band or at f_ref/2 (the message gives the peak:
+  33.6 dB for README example 8's loop), and no -3 dB point below
+  f_ref/2.
+- `design_loop_filter(..., t3_over_t1=None, c3_over_c1=None)`: with
+  both ratios, the third-order filter (C1, R2, C2, R3, C3) whose
+  averaged loop has the target bandwidth and phase margin with the
+  phase at its peak there. The peak condition is solved by root
+  finding; |L| = 1 gives the total capacitance; the parts follow from
+  a quadratic in C1 derived from the polynomial form of
+  `fracpll.filters` (module docstring of `fracpll.design`). Of its two
+  roots, which give the same loop, the one with the larger C1 (smaller
+  R3) is returned. The result adds `r3`, `c3` and `t3_s`; `averaged`
+  and `per_cycle` are read with the section. Refused: one ratio
+  without the other, ratios that are not finite and positive, and
+  ratios that cannot be built with positive parts (for example
+  T3/T1 = 1 with C3/C1 = 0.1 at 40 kHz and 55 degrees). Without the
+  ratios the second-order design is computed as before.
+- `lock_transient(..., r3=None, c3=None)`: the R3-C3 section as one
+  more branch of the filter, with the oscillator driven by C3 (`vc` is
+  then the C3 voltage).
+- `pulse_doublet_vector(..., r3=None, c3=None)`: the section, as
+  `simulate_sampled(order=2)` already used it (oscillator row 0).
+- `margin_uncertainty(..., correlations=None)`: {(input_a, input_b):
+  r} for correlated inputs. u_c^2 = sum_ij (c_i u_i) r_ij (c_j u_j),
+  the GUM's expression for correlated inputs (JCGM 100:2008, 5.2.2,
+  eqs. (13) and (14)); Monte Carlo draws from the multivariate normal
+  with these correlations. The result adds `correlation` (the full
+  matrix). Refused: unknown names, a pair of an input with itself, a
+  pair given twice, |r| > 1, and coefficients that cannot all hold at
+  once (a negative eigenvalue).
+- `read_noise_csv` and `read_tuning_csv` take `decimal=","` for files
+  written with a decimal comma. The delimiter is then detected among
+  ';', tab and whitespace, `delimiter=","` is refused, and a number
+  with a point is refused with its line number (it could be a decimal
+  point or a thousands separator).
+- `jitter_relative_sigma` and `averages_for_jitter` take
+  `method="loglog"`: the error bar of a jitter integrated with
+  `rms_jitter(..., method="loglog")`, from the first-order
+  sensitivities of that integral, in closed form per segment.
+- README examples 16 (per-cycle closed loop), 17 (third-order design,
+  rounded, and locked with `lock_transient`), 18 (correlated
+  capacitors), 19 (a decimal-comma file and the log-log plan) and 20
+  (the stability fix below).
+
+### Changed
+- `stability` follows the loop phase continuously along its scan,
+  from f_lo (taken between -360 and 0 degrees) to the crossover. Its
+  docstring no longer says the margin lies in (-180, 180]. For loops
+  whose phase at the crossover is above -360 degrees (every filter of
+  this package) the result is unchanged, bit for bit (checked on 57
+  random second- and third-order loops). `closed_loop_response` and
+  `margin_uncertainty` follow, through `stability`.
+- Results: no other result of a valid call changes. All fifteen
+  earlier README examples print what they printed with 0.8.0 (the
+  header now says 0.9.0), and so do the three tutorials.
+  `margin_uncertainty` without `correlations` is unchanged bit for bit,
+  Monte Carlo included (checked).
+- README: three questions and the file-reading sentence of the
+  introduction name the new features; examples 16 to 20; the new inputs in the function list,
+  refusals, checks, corrections and limits; 311 tests.
+
+### Fixed
+- `stability` read the loop phase modulo 360 degrees at the crossover,
+  so a phase past -360 degrees looked like a phase near 0. Test case:
+  README example 1's filter with four extra poles at 8 kHz
+  (Z / (1 + j w / (2 pi 8 kHz))^4), Icp = 100 uA, Kvco = 20 MHz/V,
+  N = 40, 50 MHz. Before: crossover 10658.85 Hz, phase margin 171.14
+  degrees, reported stable. After: refused, margin -188.86 degrees
+  (the closed form atan(w T2) - atan(w T1) - 4 atan(w/wp) at the
+  crossover), and the closed-loop polynomial has a root in the right
+  half plane (checked).
+- Whole numbers that still went through int() after the 0.8.0 fix:
+  `n_grid` of `stability`, `closed_loop_response` and
+  `sampled_margins`, `n_eval` of `lock_transient`, `n_mc` of
+  `margin_uncertainty` (before, `n_mc=2.9` ran 2 draws) and the
+  `columns` of `read_noise_csv` and `read_tuning_csv` (before,
+  `columns=(0.7, 1.9)` read columns 0 and 1). A fraction now raises
+  ValueError ("must be a whole number"); 4001.0, a NumPy integer or
+  "4001" give the same results as before (checked).
+- The docstrings of `fracpll.filters` and `third_order_impedance` said
+  that the per-cycle and edge-by-edge models do not take the
+  third-order filter; they have taken it since 0.8.0.
+
+### Not included
+- The per-cycle model (and so `sampled_margins` and
+  `sampled_closed_loop_response`) still has matched pumps, no leakage
+  and no dead zone. With them the locked pulses have a finite width
+  and a position inside the cycle, and a linear map would have to be
+  built around them; no exact reference to check such a map against
+  was prepared, so it is not offered. `simulate_pll` covers these
+  cases.
+- `sampled_margins` and `sampled_closed_loop_response` use the linear
+  per-cycle model. The pulse-width effect of `simulate_sampled(order=2)`
+  grows with the square of the phase error, so it has no loop gain to
+  add to them.
+- `reference_spurs` is still integer-N only. In a fractional-N loop
+  the pulse width changes every cycle and the locked state repeats
+  only after the whole divider pattern, which can be millions of
+  cycles; no closed form was found to compute or check it against.
+- `design_loop_filter` designs in the averaged model only (below
+  f_ref/10). A design that meets the targets in the per-cycle model
+  would be a numerical search with only the read-back to check it,
+  and was not attempted. It also does not choose `t3_over_t1` and
+  `c3_over_c1`: no published rule for them was opened for this
+  release, so none is built in (the README repeats only the package's
+  earlier note of Keese's suggestion, C3 at most C1/10 and R3 at least
+  twice R2).
+- `margin_uncertainty` does not take uncertainties of f_ref and N: N
+  is set by the digital divider, and the reference frequency was not
+  added. It cannot know which inputs are correlated; that has to come
+  from the user's data.
+- The file readers still know no instrument's file format (no sample
+  files that may be redistributed were available) and do not read
+  thousands separators.
+- The lock settling time of `lock_transient` remains the tanh model's
+  estimate for large transients.
+
+### Checks (tests)
+311 tests in total, 44 new (`tests/test_features_090.py`,
+`tests/test_fixes_090.py`).
+- `sampled_closed_loop_response` against G/(1+G) built from the
+  aliased sum of the averaged gain (a separate route to G): -3 dB to
+  1e-9 in |H|^2 (observed 1e-14), peak value 1e-8 dB (observed 2e-13),
+  lower 0.1 % to either side of the peak, for slow and fast loops with
+  and without a section; against the per-cycle simulation driven by a
+  sine at the -3 dB point and at the peak, fast loop, 1e-9 (observed
+  6e-15); against the averaged `closed_loop_response` in a slow loop,
+  1e-4 (observed 2.5e-5); refusals.
+- Third-order design: read back by `third_order_impedance` and
+  `stability` to 1e-12 in bandwidth and 1e-10 degrees (observed 2e-15
+  and 1.4e-14), phase slope at f_c by central differences below 1e-7
+  rad per unit ln f (observed 7e-10), C3/C1 and T3/T1 of the parts
+  (pole time constants from the polynomial form, 1e-9; observed
+  4e-16), five designs from 1 kHz to 2.5 MHz and 30 to 70 degrees;
+  the second-order design as the limit of small ratios (1e-5; observed
+  2e-7); the per-cycle margin of a slow design (1e-5 degrees; observed
+  5e-8); refusals.
+- `lock_transient` with a section: the small-signal transient against
+  the matrix exponential of the four-state system from the node
+  equations (1e-5 of the step; observed 1.8e-6) and the C3 voltage
+  (1e-9 V; observed 2e-10); the settled offset 2 pi atanh(I_leak/Icp)
+  and N f_ref (observed exact); refusals.
+- `pulse_doublet_vector` with a section: zero oscillator row; e^{Mt} M B
+  against the impulse response of `third_order_impedance` from its
+  poles and residues, 1e-8 (observed 1.5e-9), and Kvco/C_total at long
+  times (observed 8e-10).
+- `margin_uncertainty` with correlations: equal Icp and Kvco
+  contributions (1e-12; observed 0); r = +1 and +1/2 give 2 and
+  sqrt(3) times one (1e-12); r = -1 gives zero, is refused by the
+  curvature check without Monte Carlo, and with it spreads by
+  sqrt(2) u times one contribution (25 % for 200 draws; observed 3 %);
+  the impedance-scaling sum rule as correlations (below 2e-4 of the
+  largest contribution; observed 1.2e-6 and 4.8e-5, the size of the
+  second-order term); a 4000-draw correlated Monte Carlo (5 %;
+  observed 0.5 % and 2 %); unchanged bit for bit without correlations;
+  refusals.
+- Decimal comma: 17-digit round trips bit for bit with ';', tab and
+  space; a tuning file; refusals naming the line.
+- Log-log plan: sensitivities against central differences (1e-6;
+  observed 4e-8, and 2e-10 at a slope of exactly -1) and their sum
+  rule (1e-12; observed 2e-16); error bar against 20000 simulated
+  16-average measurements (4 %; observed 0.6 %); equal to the
+  trapezoid plan on a dense grid (1e-4; observed 9e-7); inversion;
+  refusals.
+- A regression test for each fix above (each fails with 0.8.0), and
+  the unchanged results of the old rule on 57 random loops.
+
 ## 0.8.0 (2026-11-10)
 
 The third-order loop filter (an R3-C3 section) in the per-cycle
@@ -578,7 +762,7 @@ settling time.
   backwards and refused with a misleading "crosses unity only upward"
   message; it now says the band is invalid.
 
-### Behaviour changes
+### Behavior changes
 - `lock_transient(...)["t_settle"]` changes. README example 3:
   31.847 us before, 28.985 us after (printed 31.8 -> 29.0 us). The
   pre-0.4.0 value is always at most one output sample above the new
@@ -769,7 +953,7 @@ Beyond the averaged model, and one correction.
   Also: MASH-driven fractional division, cycle-slip counting and
   optional reference jitter.
 - `sampled.sampled_loop_map` / `sampled_stability` /
-  `continuous_closed_loop_poles`: the exact linearised sampled-data
+  `continuous_closed_loop_poles`: the exact linearized sampled-data
   loop for any passive filter and any bandwidth. The averaged
   stability refusal now points to it.
 - `pfd.pfd_static_offset`: the exact tri-state PFD steady state from

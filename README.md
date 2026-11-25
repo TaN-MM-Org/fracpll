@@ -12,7 +12,8 @@ measurements, your pump current, your filter parts -- and answers the
 questions every design has to answer:
 
 - Is the loop stable, and with how much safety margin?
-- Which filter parts give the loop bandwidth and phase margin I want?
+- Which filter parts (second or third order) give the loop bandwidth
+  and phase margin I want?
 - How much noise does the output have, and how much timing jitter
   does that give?
 - Will the loop lock from a cold start, how fast, and how large a
@@ -21,14 +22,16 @@ questions every design has to answer:
 - How long must the measurement instrument average before the jitter
   number is trustworthy?
 - How well are the loop bandwidth and the margins known, given how
-  well the pump current, Kvco and the filter parts are known?
+  well the pump current, Kvco and the filter parts are known, also
+  when some of them are correlated?
 - Once locked, how strong are the tones at the reference frequency
   (reference spurs) that leakage and unequal pump currents create?
 - What closed-loop bandwidth and peaking will a jitter-transfer
-  measurement show?
+  measurement show, at any loop speed?
 
 It also reads your measured noise traces and tuning curves straight
-from text files (CSV and similar), and fits a straight-line Kvco to
+from text files (CSV and similar, with a decimal point or a decimal
+comma), and fits a straight-line Kvco to
 measured tuning points with its uncertainty. Three worked tutorials go
 from data to a final result with error bars (see [Tutorials](#tutorials)).
 
@@ -147,7 +150,7 @@ simulator.
 ## Examples
 
 Each example below runs as written, and the output shown is what it
-printed with fracpll 0.8.0. The circuit values are illustrative
+printed with fracpll 0.9.0. The circuit values are illustrative
 design values, not a recommended design.
 
 ### 1. Is the loop stable?
@@ -604,6 +607,7 @@ per-cycle phase margin of 50.1 degrees. The design
 refuses a bandwidth of `f_ref/10` or more, and a phase margin outside
 0 to 90 degrees. Round the values to parts you can buy and check
 the rounded filter again (the first tutorial below does this).
+Example 17 designs a third-order filter the same way.
 
 ### 12. A third-order filter
 
@@ -652,7 +656,8 @@ note suggests C3 at most C1/10 and R3 at least twice R2, so that the
 new pole does not interact with the main poles of the filter. The last case breaks
 that rule. Its loop phase passes -180 degrees, and the loop is
 unstable. Before 0.6.0, `stability` reported it as stable with a
-"phase margin" of 336.85 degrees (see the 0.6.0 corrections below).
+"phase margin" of 336.85 degrees (see the 0.6.0 corrections below);
+example 20 shows the 0.9.0 correction of the same kind.
 
 ### 13. Closed-loop bandwidth and peaking
 
@@ -684,7 +689,8 @@ reference and phase detector noise near 25 kHz here.
 refuses what it refuses), then finds the peak and the -3 dB point by
 root finding. It uses the averaged model and refuses a -3 dB point
 above `f_ref/10`. The R3-C3 section of example 12 costs a little phase
-margin, so it raises the peaking.
+margin, so it raises the peaking. Example 16 gives the same numbers
+for the per-cycle model, at any loop speed.
 
 ### 14. Reference spurs from leakage and pump mismatch
 
@@ -784,6 +790,214 @@ shows the edge-by-edge simulator, run with the section, settling on
 the exact charge-balance offset (`pfd_static_offset`, as in example
 4).
 
+### 16. Closed-loop bandwidth and peaking of a fast loop
+
+```python
+from fracpll import closed_loop_response, loop_filter_impedance, sampled_closed_loop_response
+
+# The slow loop of example 13, in both models.
+slow = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6)
+zf = lambda w: loop_filter_impedance(w, 100e-12, [(4.7e3, 1.5e-9)])
+a = closed_loop_response(zfilter=zf, **slow)
+p = sampled_closed_loop_response(c_shunt=100e-12, branches=[(4.7e3, 1.5e-9)], **slow)
+for name, r in [("averaged ", a), ("per cycle", p)]:
+    print(f"{name}: -3 dB at {r['f_3db_hz'] / 1e3:.2f} kHz, "
+          f"peaking {r['peaking_db']:.3f} dB")
+
+# The fast loop of example 15, which the averaged model refuses.
+fast = dict(icp=1e-3, kvco_hz_per_v=400e6, n_div=10, f_ref_hz=50e6,
+            c_shunt=8.2e-12, branches=[(1.3e3, 110e-12)])
+for name, extra in [("second order", {}), ("with R3-C3  ", dict(r3=10e3, c3=0.82e-12))]:
+    r = sampled_closed_loop_response(**fast, **extra)
+    print(f"{name}: -3 dB at {r['f_3db_hz'] / 1e6:.2f} MHz, "
+          f"peaking {r['peaking_db']:.2f} dB at {r['f_peak_hz'] / 1e6:.2f} MHz")
+```
+
+```
+averaged : -3 dB at 59.87 kHz, peaking 2.860 dB
+per cycle: -3 dB at 59.88 kHz, peaking 2.860 dB
+second order: -3 dB at 18.49 MHz, peaking 1.82 dB at 6.74 MHz
+with R3-C3  : -3 dB at 12.60 MHz, peaking 4.03 dB at 7.05 MHz
+```
+
+`sampled_closed_loop_response` (new in 0.9.0) reads the closed loop
+`G/(1+G)` of the exact per-cycle loop gain of example 8, so it works
+at any loop speed. It is the response of the output phase at the
+reference edges to a phase change at the divider (or at the
+reference, divided by `N`), and it is defined up to half the
+reference frequency. For the slow loop it agrees with
+`closed_loop_response` of example 13 to a few parts in 10^5. For the
+fast loop of example 15 the averaged model refuses; the per-cycle
+model shows that the R3-C3 section, which lowers the reference spur,
+also narrows the closed loop and raises its peaking. A loop with
+almost no gain margin, such as the loop of example 8, peaks at half
+the reference frequency and has no -3 dB point below it; that is
+refused, and the message gives the peak (33.6 dB there).
+
+### 17. Design a third-order filter
+
+```python
+from fracpll import (design_loop_filter, fit_tuning, lock_transient,
+                     third_order_impedance, stability)
+
+loop = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6)
+d = design_loop_filter(40e3, 55.0, t3_over_t1=0.25, c3_over_c1=0.1, **loop)
+(r2, c2), = d["branches"]
+print(f"C1 = {d['c1'] * 1e12:.1f} pF, R2 = {r2:.0f} Ohm, C2 = {c2 * 1e9:.4f} nF, "
+      f"R3 = {d['r3']:.0f} Ohm, C3 = {d['c3'] * 1e12:.2f} pF")
+a, p = d["averaged"], d["per_cycle"]
+print(f"averaged model:  {a['f_crossover_hz']:.1f} Hz, {a['phase_margin_deg']:.3f} degrees")
+print(f"per-cycle model: {p['f_crossover_hz']:.1f} Hz, {p['phase_margin_deg']:.3f} degrees, "
+      f"gain margin {p['gain_margin_db']:.1f} dB")
+
+# Round to parts you can buy and check again.
+parts = dict(c1=180e-12, r2=5.1e3, c2=2.2e-9, r3=16e3, c3=18e-12)
+zf = lambda w: third_order_impedance(w, **parts)
+r = stability(zfilter=zf, **loop)
+print(f"rounded: {r['f_crossover_hz']:.0f} Hz, {r['phase_margin_deg']:.1f} degrees")
+
+# Lock from a cold start with the rounded filter.
+curve = fit_tuning([0.0, 1.0, 2.0, 3.0], [1.96e9, 1.98e9, 2.00e9, 2.02e9],
+                   reference="illustrative tuning points, not a measurement")
+res = lock_transient(curve, n_div=40.0, f_ref_hz=50e6, icp=100e-6,
+                     c_shunt=parts["c1"], branches=[(parts["r2"], parts["c2"])],
+                     r3=parts["r3"], c3=parts["c3"], vc0=1.0)
+print("locked:", res["locked"], f"settles in {res['t_settle'] * 1e6:.0f} us")
+```
+
+```
+C1 = 173.1 pF, R2 = 5340 Ohm, C2 = 2.3208 nF, R3 = 15940 Ohm, C3 = 17.31 pF
+averaged model:  40000.0 Hz, 55.000 degrees
+per-cycle model: 40000.0 Hz, 55.000 degrees, gain margin 25.5 dB
+rounded: 38569 Hz, 53.2 degrees
+locked: True settles in 63 us
+```
+
+With `t3_over_t1` and `c3_over_c1` (new in 0.9.0), `design_loop_filter`
+returns the third-order filter of example 12 for a target bandwidth
+and phase margin. The two ratios are yours to choose: where the
+R3-C3 pole sits (its time constant over that of the main filter pole,
+0.25 here) and how big C3 is next to C1 (0.1 here, the most that
+Keese's note suggests). As for the second-order filter, the phase of
+the loop gain peaks at the bandwidth. The design rule is worked out
+in the docstring of `fracpll.design`; it is derived from the
+filter's circuit equations, not copied from a published procedure.
+When the two ratios cannot be built with positive parts, it refuses
+and asks for smaller ones. `lock_transient` now also takes the R3-C3
+section (`r3`, `c3`); here it locks the rounded filter from 1.0 V.
+Its settling time is the same kind of estimate as in example 3.
+
+### 18. Correlated part tolerances
+
+```python
+from fracpll import margin_uncertainty
+
+loop = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6,
+            c_shunt=100e-12, branches=[(4.7e3, 1.5e-9)])
+u = dict(u_icp=0.02, u_kvco=0.016, u_c_shunt=0.05 / 3 ** 0.5,
+         u_branches=[(0.01 / 3 ** 0.5, 0.05 / 3 ** 0.5)])
+
+# The two capacitors come from the same reel: if one is high, so is
+# the other (correlation 0.9, an assumed value for this example).
+same_reel = {("c_shunt", "branch0_c"): 0.9}
+for name, corr in [("independent", None), ("same reel  ", same_reel)]:
+    r = margin_uncertainty(**loop, **u, correlations=corr, n_mc=2000, seed=1)
+    print(f"{name}: bandwidth +- {r['u']['f_crossover_hz']:.0f} Hz, "
+          f"phase margin +- {r['u']['phase_margin_deg']:.2f} degrees "
+          f"(Monte Carlo {r['mc']['phase_margin_deg']['std']:.2f})")
+```
+
+```
+independent: bandwidth +- 848 Hz, phase margin +- 0.77 degrees (Monte Carlo 0.77)
+same reel  : bandwidth +- 860 Hz, phase margin +- 0.61 degrees (Monte Carlo 0.60)
+```
+
+By default `margin_uncertainty` treats every input as independent.
+With `correlations` (new in 0.9.0) you give the correlation
+coefficient of any pair of inputs, from -1 to +1. The combined
+uncertainty then follows the GUM's rule for correlated inputs
+(JCGM 100:2008, 5.2.2), and the Monte Carlo draws are correlated the
+same way. The phase margin depends strongly on the ratio C2/C1 of the
+two capacitors, so when both move together its uncertainty shrinks. The
+0.9 here is an assumption made for the example, not a measured
+value; use a correlation only when you have a reason for it, such as
+parts measured together or taken from one batch.
+
+### 19. A file with a decimal comma, and a plan for the log-log rule
+
+```python
+import numpy as np
+from fracpll import read_noise_csv, rms_jitter, dbc_to_psd, averages_for_jitter
+
+# A file saved with European settings: semicolons between the columns
+# and a decimal comma.
+with open("vco_noise_eu.csv", "w") as fh:
+    fh.write("Offset (Hz);Phase noise (dBc/Hz)\n"
+             "1e4;-65,5\n1e5;-92,25\n1e6;-115\n1e7;-135,75\n")
+
+vco = read_noise_csv("vco_noise_eu.csv", decimal=",",
+                     reference="illustrative decade points, not a measurement")
+print("read:", ", ".join(f"{x:g}" for x in vco.dbc_per_hz), "dBc/Hz")
+
+f = np.array(vco.f_offset_hz)
+s = dbc_to_psd(np.array(vco.dbc_per_hz))
+print(f"jitter at 2 GHz (log-log rule): {rms_jitter(f, s, 2e9, method='loglog') * 1e12:.3f} ps")
+for method in ("trapezoid", "loglog"):
+    n, got = averages_for_jitter(0.05, f, s, method=method)
+    print(f"averages for a 5 % error bar, {method:9s}: {n} (gives {got * 100:.2f} %)")
+```
+
+```
+read: -65.5, -92.25, -115, -135.75 dBc/Hz
+jitter at 2 GHz (log-log rule): 4.632 ps
+averages for a 5 % error bar, trapezoid: 96 (gives 4.98 %)
+averages for a 5 % error bar, loglog   : 62 (gives 4.97 %)
+```
+
+`decimal=","` (new in 0.9.0) reads files written with a decimal comma.
+The comma then cannot also separate the columns, so the separator is
+found among semicolon, tab and spaces. A number written with a point
+in such a file is refused with its line number, because the point
+could be a decimal point or a thousands separator.
+
+The measurement plan (`jitter_relative_sigma`, `averages_for_jitter`)
+now also takes `method="loglog"`, for jitter integrated with the
+log-log rule of example 9. On a few points far apart the two rules
+weigh the points differently, and so need different numbers of
+averages (here 96 and 62); on a dense trace they agree.
+
+### 20. A loop whose phase passes -360 degrees
+
+```python
+import numpy as np
+from fracpll import loop_filter_impedance, stability
+
+loop = dict(icp=100e-6, kvco_hz_per_v=20e6, n_div=40.0, f_ref_hz=50e6)
+
+# Example 1's filter followed by four more poles at 8 kHz, for example
+# four buffered R-C sections: far too much filtering.
+wp = 2 * np.pi * 8e3
+zf = lambda w: (loop_filter_impedance(w, 100e-12, [(4.7e3, 1.5e-9)])
+                / (1 + 1j * w / wp) ** 4)
+try:
+    stability(zfilter=zf, **loop)
+except ValueError as err:
+    print("refused:", str(err).split(":")[0])
+```
+
+```
+refused: phase margin -188.86 deg at crossover 1.066e+04 Hz
+```
+
+Four extra poles at 8 kHz turn the loop phase by almost another 360
+degrees before the 10.7 kHz crossover: it is -368.86 degrees there,
+and the closed loop is unstable. Up to 0.8.0, `stability` read the
+phase at the crossover alone, where -368.86 and -8.86 degrees look the
+same, and reported this loop as stable with a phase margin of 171.14
+degrees. Since 0.9.0 it follows the phase along its frequency scan,
+from the low end up to the crossover. For the filters of examples 1
+and 12 nothing changes.
+
 ## Tutorials
 
 Three scripts in [`examples/`](examples) go from data to a final result
@@ -875,14 +1089,16 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
   `c3` (example 15).
 - `closed_loop_response(icp, kvco_hz_per_v, n_div, zfilter, f_ref_hz)`
   -- the -3 dB bandwidth and the peaking of the closed loop `L/(1+L)`
-  (example 13).
+  (example 13); `sampled_closed_loop_response` gives the same for the
+  per-cycle model (example 16).
 
 **Designing the filter**
 
 - `design_loop_filter(f_c_hz, phase_margin_deg, icp, kvco_hz_per_v,
   n_div, f_ref_hz)` -- the second-order filter for a target loop
   bandwidth and phase margin, read back in the averaged and per-cycle
-  models (example 11).
+  models (example 11); with `t3_over_t1` and `c3_over_c1`, the
+  third-order filter (example 17).
 
 **Delta-sigma divider**
 
@@ -926,8 +1142,8 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
   tuning points, with standard uncertainties, a test that a straight
   line describes the points, and a ready `LinearVCO` (example 10).
 - `lock_transient`, `static_offset` -- lock-in from a cold start on
-  the measured curve, and the phase error that leakage and mismatch
-  leave behind.
+  the measured curve (with an optional R3-C3 section, `r3` and `c3`),
+  and the phase error that leakage and mismatch leave behind.
 
 **Uncertainty of the loop**
 
@@ -936,21 +1152,24 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
   `model="sampled"`) from the uncertainties of the pump current, Kvco
   and each filter part (an R3-C3 section included, with `u_r3` and
   `u_c3`), with each input's share and an optional Monte Carlo check
-  (example 10).
+  (example 10); `correlations` gives the correlation of any pair of
+  inputs (example 18).
 
 **Reading measured data**
 
 - `read_noise_csv`, `read_tuning_csv` -- a `NoiseSpec` or a fitted
   tuning curve from a text file (comma, semicolon, tab or space
   separated; header lines skipped; choose the columns and the
-  frequency unit). Text inside the data, repeated or unsorted
-  points and missing values are refused with the line number.
+  frequency unit; `decimal=","` for a decimal comma). Text inside the
+  data, repeated or unsorted points and missing values are refused
+  with the line number.
 
 **Measurement planning**
 
 - `jitter_relative_sigma`, `averages_for_jitter` -- how uncertain a
   measured jitter value is after `n` averages, and how many averages a
-  target uncertainty needs.
+  target uncertainty needs, for the trapezoid or (`method="loglog"`)
+  the log-log integration rule.
 
 **Per-cycle model** (any loop bandwidth)
 
@@ -965,8 +1184,11 @@ third order   53.7 degrees  165.1 kHz        2.17 dB
 - `simulate_sampled(..., order=1 or 2)` -- a fast cycle-by-cycle
   noise run; `order=2` adds the pulse-width effect of example 7.
 - `pulse_doublet_vector` -- the building block of that effect.
-- All of these except `pulse_doublet_vector` take an R3-C3 section
-  as `r3` and `c3` (example 15).
+- `sampled_closed_loop_response` -- the -3 dB bandwidth and peaking
+  of the per-cycle closed loop, at any loop speed (example 16).
+- All of these take an R3-C3 section as `r3` and `c3` (example 15;
+  `pulse_doublet_vector` and `sampled_closed_loop_response` since
+  0.9.0).
 
 **Edge-by-edge simulator**
 
@@ -1052,11 +1274,26 @@ gives its inputs, units and conventions.
   0 in the per-cycle model or the edge-by-edge simulator (C3 is then
   in parallel with C1: add it to `c_shunt`);
 - (since 0.8.0) a tuning curve is asked about a control voltage that
-  is NaN or infinite (it used to return NaN).
+  is NaN or infinite (it used to return NaN);
+- (since 0.9.0) `stability` finds the loop phase at the crossover
+  past -360 degrees (it used to read it modulo 360 and could report
+  such a loop as stable, example 20), or `n_grid`, `n_eval`, `n_mc` or
+  a file column is given as a fraction (they used to be cut toward
+  zero);
+- (since 0.9.0) `sampled_closed_loop_response` finds the loop
+  unstable, its largest response at half the reference frequency, or
+  no -3 dB point below it;
+- (since 0.9.0) a third-order design is asked for ratios that cannot
+  be built with positive parts;
+- (since 0.9.0) `correlations` names an unknown input, pairs an input
+  with itself, gives a pair twice or a coefficient outside -1 to +1,
+  or gives coefficients that cannot all hold at once;
+- (since 0.9.0) a file read with `decimal=","` has a number written
+  with a point, or is also given `delimiter=","`.
 
 ## How the results are checked
 
-267 automated tests run on every change, on Python 3.9 to 3.14,
+311 automated tests run on every change, on Python 3.9 to 3.14,
 and once more on Python 3.9 with the oldest NumPy (1.22.0) and SciPy
 (1.8.0) the package allows. Each numerical check compares the package
 with something independent of it: an exact formula, a second
@@ -1303,9 +1540,58 @@ in 0.8.0)
   impedance scaling (to 10^-6), and its per-cycle and averaged
   answers agree in a slow loop (within 0.2 %).
 
+**New in 0.9.0**
+
+- `sampled_closed_loop_response` is held against a separate route to
+  the per-cycle loop gain (the averaged gain summed over all its
+  aliases, as above): there the response at the reported -3 dB point
+  is -3 dB to 1 part in 10^9 and the peak value agrees to 10^-8 dB
+  (observed: 10^-14 and 2 x 10^-13 dB), and the response 0.1 % to
+  either side of the peak is lower. Two filters, with and without an
+  R3-C3 section, slow and fast. In the time domain, a sine wave of
+  divider phase at the -3 dB point and at the peak, run through the
+  per-cycle simulation of the fast loop, comes out with exactly that
+  gain (to 1 part in 10^9; observed 6 parts in 10^15). For the slow
+  loop it agrees with the averaged `closed_loop_response` to
+  1 part in 10^4 (observed 2.5 parts in 10^5).
+- A third-order design, read back with `third_order_impedance` and
+  `stability`, has the target bandwidth (to 1 part in 10^12) and phase
+  margin (to 10^-10 degrees), with the phase at its peak there (slope
+  by finite differences below 10^-7 rad per unit of ln f), for five
+  designs from 1 kHz to 2.5 MHz. Its parts have the chosen C3/C1, and
+  the poles found from the parts by the polynomial form have the
+  chosen T3/T1. With both ratios near zero it becomes the second-order
+  design (to 1 part in 10^5; observed 2 parts in 10^7).
+- `lock_transient` with an R3-C3 section, for a small phase step,
+  equals the matrix exponential of the linear four-state system
+  written in the test from the node equations (to 10^-5 of the step;
+  observed 1.8 x 10^-6), and it settles onto the closed-form phase
+  offset and onto `N * f_ref`.
+- `pulse_doublet_vector` with the section has a zero oscillator row,
+  and e^{Mt} M B follows the impulse response of
+  `third_order_impedance` found from its poles and residues (to 1 part
+  in 10^8; observed 1.5 parts in 10^9).
+- `margin_uncertainty` with `correlations`: Icp and Kvco enter the
+  averaged loop only as their product, so their contributions are
+  equal; with correlation +1 the uncertainty is twice one of them,
+  with +1/2 it is sqrt(3) times one (both to 1 part in 10^12), and
+  with -1 it is zero, while the Monte Carlo spread is the second-order
+  value sqrt(2) u times one contribution (within 25 % for 200 draws;
+  observed 3 %). The impedance-scaling rule above, written as
+  correlations, cancels to first order. A 4000-draw correlated Monte
+  Carlo agrees with the formula within 5 % (observed 0.5 % and 2 %).
+  Without correlations every result is unchanged, bit for bit.
+- Files with a decimal comma read back bit for bit, with a semicolon,
+  tab or space between the columns.
+- The log-log measurement plan: its weights match finite differences
+  (to 1 part in 10^6) and add up to the integral itself (to 1 part in
+  10^12), and its error bar agrees with 20000 simulated measurements
+  within 4 % (observed 0.6 %). On a dense grid it equals the
+  trapezoid plan to 1 part in 10^4 (observed 9 parts in 10^7).
+
 **Fixes in this version**
 
-- Each fix listed under 0.8.0 below has a test that fails with the
+- Each fix listed under 0.9.0 below has a test that fails with the
   old code and passes with the new.
 
 ## Corrections in earlier versions
@@ -1458,6 +1744,29 @@ NaNs.**
 
 No result of a valid call changes.
 
+**0.9.0 fixed a wrong stability verdict and more silent truncations.**
+
+- `stability` read the loop phase at the crossover alone, modulo 360
+  degrees. A loop whose phase had fallen past -360 degrees there was
+  read as having a large positive margin. Example 20's loop (example
+  1's filter with four extra poles at 8 kHz) was reported as stable
+  with 171.14 degrees; the margin is -188.86 degrees, and the closed
+  loop has poles in the right half plane. The phase is now followed
+  along the frequency scan. Where the old reading was right the result
+  is the same, bit for bit (checked on 57 random loops, second and
+  third order).
+- `n_grid` of `stability`, `closed_loop_response` and
+  `sampled_margins`, `n_eval` of `lock_transient`, `n_mc` of
+  `margin_uncertainty` and the `columns` of the file readers were cut
+  toward zero without a word, as the inputs fixed in 0.8.0 were:
+  `n_mc=2.9` ran 2 draws, and `columns=(0.7, 1.9)` read columns 0
+  and 1. A fraction is now refused.
+- The docstrings of `third_order_impedance` and `fracpll.filters` still
+  said that the per-cycle and edge-by-edge models do not take the
+  third-order filter, which they have done since 0.8.0.
+
+No README example's output changes.
+
 The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Limits
@@ -1492,32 +1801,38 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   results do not change; on a few widely spaced points it overstates
   a falling spectrum, and `method="loglog"` is the right choice there.
   The measurement plan (`jitter_relative_sigma`,
-  `averages_for_jitter`) uses the trapezoid weights, which suits a
-  dense analyzer trace.
+  `averages_for_jitter`) uses the trapezoid weights by default, which
+  suits a dense analyzer trace; with `method="loglog"` it uses the
+  first-order sensitivities of the log-log rule, which hold for small
+  scatter (a few averages or more).
 - The file readers do not know any instrument's file format; you
   choose the columns and the frequency unit. A decimal comma (`1,5`)
-  is not supported.
+  is read with `decimal=","`, but a thousands separator is not.
 - `fit_linear_vco` fits a straight line. Over a wide voltage range a
   real tuning curve bends, and the test then refuses; fit a window
   around the operating point. Its uncertainties assume independent
   readings with the stated (or a common) standard deviation.
-- `design_loop_filter` designs only the second-order filter, and
-  only in the averaged model; its result is exact for the values it
-  returns, not for the rounded parts you buy. The R3-C3 section of
+- `design_loop_filter` designs the second-order filter, or the
+  third-order one for the two ratios you choose, and only in the
+  averaged model; its result is exact for the values it returns, not
+  for the rounded parts you buy. It does not choose the ratios for
+  you: no rule for them is built in. The R3-C3 section of
   `third_order_impedance` is the one network beyond a capacitor to
-  ground with series resistor-capacitor branches that the per-cycle
-  model, the edge-by-edge simulator, `reference_spurs` and
-  `margin_uncertainty` take (as `r3` and `c3`);
-  `lock_transient`, `design_loop_filter` and `pulse_doublet_vector`
-  do not take it. With the section, `simulate_sampled(order=2)` is
-  checked against the edge-by-edge simulator for two sections in the
-  loop of example 12, not as widely as without it.
-- `stability` gives the phase margin between -180 and 180 degrees. A
-  loop whose phase at the crossover has fallen to -360 degrees or
-  below (it takes more extra poles than the third-order filter has)
-  would be misread; no filter in this package reaches that.
-- `margin_uncertainty` treats the inputs as independent (uncorrelated)
-  and takes `f_ref` and `N` as exact. It is a first-order method;
+  ground with series resistor-capacitor branches that the other
+  models take (as `r3` and `c3`). With the section,
+  `simulate_sampled(order=2)` is checked against the edge-by-edge
+  simulator for two sections in the loop of example 12, not as widely
+  as without it.
+- `stability` follows the loop phase along its frequency scan
+  (`n_grid` points from `f_lo`). A filter whose phase turns by more
+  than 180 degrees between two neighboring scan points (a very sharp
+  resonance) needs a larger `n_grid`. The phase at `f_lo` is taken
+  between -360 and 0 degrees, which holds for a loop gain that starts
+  with the oscillator's integration.
+- `margin_uncertainty` treats the inputs as independent unless you
+  give their correlations, and takes `f_ref` and `N` as exact. It
+  cannot know which of your parts are correlated or how strongly;
+  that has to come from your own data. It is a first-order method;
   the curvature check and the optional Monte Carlo say when that is
   not enough. It knows only the uncertainties you give it, and the
   model it calls (`stability` or `sampled_margins`) keeps its own
@@ -1534,8 +1849,10 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
   from the pump are computed: coupling of the reference into the
   oscillator by other paths is not modeled.
 - `closed_loop_response` uses the averaged model and refuses a -3 dB
-  point above `f_ref/10`; for faster loops, `sampled_open_loop` gives
-  the exact per-cycle loop gain.
+  point above `f_ref/10`; for faster loops,
+  `sampled_closed_loop_response` gives the per-cycle closed loop. That
+  is the response at the reference edges only, of the linear
+  per-cycle model (no pulse-width effect), up to `f_ref/2`.
 - No transistor models, device physics or foundry data ship with the
   package. Your measured tuning curves and noise carry the technology,
   each with a required `reference` field.
