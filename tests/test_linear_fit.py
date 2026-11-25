@@ -124,7 +124,7 @@ def test_curved_points_are_refused_and_a_window_fixes_it():
         fit_linear_vco(vc, noisy, REF)
     # a narrow window around 1.5 V: the local slope 0.4e9 - 0.08e9 * 1.5
     # (exact for a parabola: the chord slope over a symmetric window
-    # equals the derivative at its centre)
+    # equals the derivative at its center)
     w = fit_linear_vco(vc, f, REF, f_sigma_hz=3e6, vc_window=(1.25, 1.75))
     assert w["n_points"] == 3
     assert np.isclose(w["kvco_hz_per_v"], 0.4e9 - 0.08e9 * 1.5, rtol=1e-9)

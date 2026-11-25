@@ -4,7 +4,7 @@ results it does not contain.
 * the periodic steady state against the EXACT charge balance of a
   tri-state PFD (leakage, mismatch, reset delay, dead zone -- five
   cases, both edge orders);
-* its small-perturbation trajectory against the exact linearised
+* its small-perturbation trajectory against the exact linearized
   sampled-data map of `fracpll.sampled`, cycle by cycle;
 * the exact stability boundary of that map, from both sides, in a
   regime the averaged model refuses;
@@ -181,7 +181,7 @@ def test_edge_level_floor_is_converged_not_numerical():
     pulse-width effect of tests/test_second_order.py) shrinks with the
     PFD pulse width (N and Kvco scaled together keep the linear loop
     identical in cycle units, so the linear band must not move while a
-    pulse-width effect must) -- the signature of circuit behaviour of
+    pulse-width effect must) -- the signature of circuit behavior of
     the model, not of rounding."""
     fr, icp = 50e6, 100e-6
     c0, br = 100e-12, [(4.7e3, 1.5e-9)]
