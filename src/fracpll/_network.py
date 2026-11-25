@@ -15,7 +15,7 @@ rates mu_j >= 0.  The network is connected, so exactly one rate is
 zero: the total charge sum_k C_k v_k is conserved when no current
 flows.  That mode is set to zero EXACTLY (its eigenvector is known in
 closed form, C^(1/2) 1 / ||.||), not taken from the numerical
-eigen-solver, so the integrating behaviour of the loop is exact.
+eigen-solver, so the integrating behavior of the loop is exact.
 
 With the pump current held constant over an interval (true between
 the edges of an event-driven simulation), each mode then has a closed

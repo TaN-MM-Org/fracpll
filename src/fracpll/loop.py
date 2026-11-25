@@ -27,6 +27,14 @@ by edge.
 
 Since 0.7.0, `closed_loop_response` reads the closed loop L/(1+L):
 its -3 dB bandwidth and its peaking, with the same refusals.
+
+Since 0.9.0, `stability` follows the loop phase continuously along its
+scan, from the low end of the band up to the crossover, instead of
+reading it modulo 360 degrees at the crossover alone.  A loop whose
+phase had fallen past -360 degrees there (a filter with several poles
+below the crossover, or a loop delay) was reported with a large
+positive margin before; it now gets its true, negative margin and is
+refused.
 """
 from __future__ import annotations
 
@@ -35,6 +43,8 @@ from typing import Callable
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq, minimize_scalar
+
+from ._checks import whole
 
 __all__ = ["open_loop", "error_transfer", "lowpass_transfer",
            "stability", "closed_loop_response"]
@@ -119,11 +129,23 @@ def stability(icp: float, kvco_hz_per_v: float, n_div: float,
     Scans |L| on a log grid from f_lo to f_hi (defaults: f_ref/1e6 to
     f_ref/2), locates the last downward unity-gain crossing, refines it
     by root finding, and returns dict(f_crossover_hz,
-    phase_margin_deg), the margin being 180 deg + arg L at the
-    crossover, in (-180, 180].
+    phase_margin_deg), the margin being 180 deg + the phase of L at the
+    crossover.
+
+    The phase is followed continuously along the scan (since 0.9.0):
+    it is taken between -360 and 0 degrees at f_lo, where the
+    oscillator's integration alone gives -90, and then followed from
+    grid point to grid point up to the crossover, so that a phase that
+    has fallen past -360 degrees is not mistaken for one near 0.  This
+    needs the phase to turn by less than 180 degrees between two grid
+    points; for a very sharp resonance in the filter, raise n_grid.
+    For the filters of this package (phase between -180 and -90
+    degrees) the result is the same, bit for bit, as reading the phase
+    at the crossover alone, as before 0.9.0.
 
     zfilter may be any transimpedance from the pump current to the
     oscillator control voltage, for example `third_order_impedance`.
+    n_grid is a whole number >= 2.
 
     Refuses when |L| never crosses unity in the band, when the phase
     margin is not positive (the linearized loop is unstable), and when
@@ -137,11 +159,13 @@ def stability(icp: float, kvco_hz_per_v: float, n_div: float,
     f_hi = f_ref * 0.5 if f_hi is None else float(f_hi)
     if not (np.isfinite(f_lo) and np.isfinite(f_hi) and 0.0 < f_lo < f_hi):
         raise ValueError("need 0 < f_lo < f_hi for the scanned band")
-    if int(n_grid) < 2:
+    n_grid = whole(n_grid, "n_grid")
+    if n_grid < 2:
         raise ValueError(f"n_grid must be >= 2, got {n_grid!r}")
-    f = np.geomspace(f_lo, f_hi, int(n_grid))
+    f = np.geomspace(f_lo, f_hi, n_grid)
     w = 2.0 * np.pi * f
-    mag = np.abs(open_loop(w, icp, kvco_hz_per_v, n_div, zfilter))
+    lg_grid = open_loop(w, icp, kvco_hz_per_v, n_div, zfilter)
+    mag = np.abs(lg_grid)
     above = mag > 1.0
     if above.all() or not above.any():
         raise ValueError(
@@ -160,15 +184,8 @@ def stability(icp: float, kvco_hz_per_v: float, n_div: float,
                            float(f[i]), float(f[i + 1]))
     lg = open_loop(2.0 * np.pi * fc, icp, kvco_hz_per_v, n_div,
                    zfilter)[0]
-    # 180 deg + arg L, reported in (-180, 180] (the convention of
-    # `sampled_margins`).  np.angle returns arg L in (-180, 180], so a
-    # loop gain whose phase has passed -180 deg (for example a
-    # third-order filter whose R3-C3 pole sits below the crossover)
-    # came out before 0.6.0 as a margin above 180 deg (336.85 instead
-    # of -23.15) and was reported as stable.
-    pm = 180.0 + float(np.degrees(np.angle(lg)))
-    if pm > 180.0:
-        pm -= 360.0
+    pm = 180.0 + float(np.degrees(_continuous_phase(lg_grid[:i + 1],
+                                                     lg)))
     if pm <= 0.0:
         raise ValueError(
             f"phase margin {pm:.2f} deg at crossover {fc:.4g} Hz: the "
@@ -186,6 +203,34 @@ def stability(icp: float, kvco_hz_per_v: float, n_div: float,
             "edge-level loop")
     return {"f_crossover_hz": float(fc),
             "phase_margin_deg": float(pm)}
+
+
+def _continuous_phase(lg_scan, lg_end):
+    """The phase (rad) of lg_end, followed continuously along lg_scan.
+
+    lg_scan holds the loop gain on the scan grid from its low end up to
+    the last grid point before the crossover, and lg_end is the gain at
+    the crossover.  The phase at the low end is taken in (-2 pi, 0]
+    (the oscillator integrates, so a loop gain starts near -90 or -180
+    degrees), then unwrapped from point to point.
+
+    History: before 0.6.0 the margin was 180 deg + np.angle(L) with
+    np.angle in (-180, 180], so a loop whose phase had passed -180 deg
+    (example 12's refused third-order filter) got 336.85 instead of
+    -23.15 degrees.  0.6.0 moved the margin into (-180, 180], which
+    still misread a phase below -360 deg: a filter with four extra
+    poles at 8 kHz (phase -368.86 deg at its 10.66 kHz crossover) was
+    reported stable with 171.14 degrees.  Where the old rule was right
+    every correction here is exactly zero, so the result is unchanged,
+    bit for bit."""
+    a = np.angle(np.asarray(lg_scan, dtype=complex))
+    two_pi = 2.0 * np.pi
+    if a[0] > 0.0:
+        a = a.copy()
+        a[0] -= two_pi
+    ph = np.unwrap(a)
+    a_end = float(np.angle(lg_end))
+    return a_end + two_pi * round((float(ph[-1]) - a_end) / two_pi)
 
 
 def closed_loop_response(icp: float, kvco_hz_per_v: float, n_div: float,
@@ -224,7 +269,7 @@ def closed_loop_response(icp: float, kvco_hz_per_v: float, n_div: float,
                     f_lo=f_lo, n_grid=n_grid)
     f_ref = float(f_ref_hz)
     f_lo = f_ref * 1e-6 if f_lo is None else float(f_lo)
-    f = np.geomspace(f_lo, f_ref * 0.5, int(n_grid))
+    f = np.geomspace(f_lo, f_ref * 0.5, whole(n_grid, "n_grid"))
     h2 = np.abs(lowpass_transfer(open_loop(2.0 * np.pi * f, icp,
                                            kvco_hz_per_v, n_div,
                                            zfilter))) ** 2

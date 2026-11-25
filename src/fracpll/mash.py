@@ -27,7 +27,7 @@ Two descriptions of the resulting phase error are provided.
                                                         [rad^2/Hz].
 
    Derivation: the divider count error is the quantization error e of
-   an m-th order noise-shaper, NTF (1 - z^-1)^m, with e modelled as
+   an m-th order noise-shaper, NTF (1 - z^-1)^m, with e modeled as
    white with variance 1/12 (count^2).  A count error of dN cycles in
    one period is a frequency error dN f_ref at the OSCILLATOR, and the
    phase is its running sum, 2 pi sum(dN) oscillator radians -- one

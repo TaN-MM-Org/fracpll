@@ -4,9 +4,9 @@ A charge-pump loop is not continuous-time: the detector acts once per
 reference period, as a pulse of charge.  The averaged gain L(jw) of
 `fracpll.loop` is its low-bandwidth approximation, and that is why
 `fracpll.loop.stability` refuses beyond f_ref/10.  This module removes
-that limit with the linearised map the edge dynamics actually obey.
+that limit with the linearized map the edge dynamics actually obey.
 
-Linearise about lock.  Between reference edges the filter state x
+Linearize about lock.  Between reference edges the filter state x
 (capacitor voltages, see `fracpll._network`) and the oscillator excess
 phase psi (in oscillator CYCLES) evolve with no pump current,
 
@@ -44,18 +44,19 @@ aliased sum of the averaged gain, sum_m L(j(w + m 2 pi f_ref)), the
 margins against eigenvalue routes, and G/(1+G) against the per-cycle
 simulation in the time domain.
 
-Since 0.8.0 every function here (except `pulse_doublet_vector`) also
-takes the third-order filter of `fracpll.filters.third_order_impedance`
-through `r3` and `c3`: the R3-C3 section is one more series branch of
-the filter network, and the oscillator is driven by the voltage on C3
-instead of the pump node (see `fracpll._network`).  The tests hold G
+Since 0.8.0 every function here (and since 0.9.0 also
+`pulse_doublet_vector`) takes the third-order filter of
+`fracpll.filters.third_order_impedance` through `r3` and `c3`: the
+R3-C3 section is one more series branch of the filter network, and the
+oscillator is driven by the voltage on C3 instead of the pump node
+(see `fracpll._network`).  The tests hold G
 with the section against the aliased sum of the averaged gain built on
 `third_order_impedance`, and the per-cycle map against the edge-level
 simulator run with the same section.
 
 Honest limits: this is the SMALL-SIGNAL map about lock, with matched
 pumps and no dead zone (a dead zone has zero gain at the origin, so
-there is nothing to linearise; `fracpll.eventsim` handles it).  It
+there is nothing to linearize; `fracpll.eventsim` handles it).  It
 makes no claim about pull-in or cycle slips -- those are large-signal,
 and belong to the event-driven simulator.
 """
@@ -67,13 +68,14 @@ from typing import Any, Sequence
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.linalg import expm
-from scipy.optimize import brentq
+from scipy.optimize import brentq, minimize_scalar
 
 from ._checks import whole
 from ._network import FilterModes, filter_network
 
 __all__ = ["sampled_loop_map", "sampled_stability",
            "sampled_open_loop", "sampled_margins",
+           "sampled_closed_loop_response",
            "continuous_closed_loop_poles", "simulate_sampled",
            "pulse_doublet_vector"]
 
@@ -283,9 +285,10 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
     f_lo = f_ref * 1e-6 if f_lo is None else float(f_lo)
     if not (np.isfinite(f_lo) and 0.0 < f_lo < f_hi):
         raise ValueError("need 0 < f_lo < f_ref/2")
-    if int(n_grid) < 2:
+    n_grid = whole(n_grid, "n_grid")
+    if n_grid < 2:
         raise ValueError(f"n_grid must be >= 2, got {n_grid!r}")
-    f = np.geomspace(f_lo, f_hi, int(n_grid))
+    f = np.geomspace(f_lo, f_hi, n_grid)
     f[-1] = f_hi
     # The loop map is built once and reused for every evaluation of G
     # (since 0.7.0; before, each of the ~10 root-finding steps rebuilt
@@ -354,6 +357,121 @@ def sampled_margins(icp: float, kvco_hz_per_v: float, n_div: float,
             "stable": bool(rho < 1.0), "spectral_radius": rho}
 
 
+def sampled_closed_loop_response(icp: float, kvco_hz_per_v: float,
+                                 n_div: float, f_ref_hz: float,
+                                 c_shunt: float,
+                                 branches: Sequence[tuple[float, float]]
+                                 = (),
+                                 pump_polarity: int = 1,
+                                 f_lo: float | None = None,
+                                 n_grid: int = 4001,
+                                 r3: float | None = None,
+                                 c3: float | None = None) -> dict[str, Any]:
+    """Closed-loop bandwidth and peaking of the exact per-cycle loop.
+
+    The per-cycle counterpart of `fracpll.loop.closed_loop_response`,
+    for any loop bandwidth (since 0.9.0).  H = G/(1+G), with G the exact
+    per-cycle loop gain of `sampled_open_loop`, is the transfer from a
+    divider phase (or a reference phase, divided by N) to the
+    oscillator phase at the reference edges.  The loop is a sampled
+    system, so H is defined up to f_ref/2, and it describes the output
+    phase at the reference edges, not between them.
+
+    The loop is first read with `sampled_margins` (same scan, same
+    refusals), and refused unless it is stable.  Then |H| is scanned on
+    the log grid from f_lo (default f_ref/1e6) to f_ref/2, its largest
+    value is refined by Brent's bounded method on ln f, and the -3 dB
+    point (the last offset where |H|^2 falls through 1/2) by root
+    finding on ln f.
+
+    Returns dict(f_3db_hz, peaking_db, f_peak_hz, f_crossover_hz,
+    phase_margin_deg, gain_margin_db), with the last three from
+    `sampled_margins`.  For a slow loop the first three agree with
+    `closed_loop_response` (the averaged model); the tests check that,
+    and check the bandwidth and the peak against the response of the
+    per-cycle simulation `simulate_sampled(order=1)` to a sine wave.
+
+    Refuses what `sampled_margins` refuses, an unstable loop, a largest
+    |H| at the low end of the scanned band (no peak inside it: lower
+    f_lo, or the loop is not type 2), and |H| that does not fall
+    through -3 dB below f_ref/2 (for example a loop so close to its
+    gain margin that |H| is largest at f_ref/2: the message gives that
+    peak).
+
+    r3, c3 : optional R3-C3 section (ohm, F), as for `sampled_loop_map`.
+    """
+    mar = sampled_margins(icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt,
+                          branches, pump_polarity, f_lo=f_lo,
+                          n_grid=n_grid, r3=r3, c3=c3)
+    if not mar["stable"]:
+        raise ValueError(
+            f"the per-cycle loop is unstable (spectral radius "
+            f"{mar['spectral_radius']:.6g}): it has no closed-loop "
+            "response to report")
+    f_ref = float(f_ref_hz)
+    f_hi = 0.5 * f_ref
+    f_lo = f_ref * 1e-6 if f_lo is None else float(f_lo)
+    f = np.geomspace(f_lo, f_hi, whole(n_grid, "n_grid"))
+    f[-1] = f_hi
+    m, PB, k = _gain_parts(icp, kvco_hz_per_v, n_div, f_ref, c_shunt,
+                           branches, pump_polarity, r3, c3)
+    Phi = m["Phi"]
+
+    def h2_of(g):
+        return np.abs(g / (1.0 + g)) ** 2
+
+    h2 = h2_of(_gain_at(f, Phi, PB, k, f_ref))
+
+    def h2_at(x):                       # |H|^2 at f = exp(x)
+        fx = min(float(np.exp(x)), f_hi)
+        return float(h2_of(_gain_at(np.array([fx]), Phi, PB, k,
+                                    f_ref))[0])
+
+    i = int(np.argmax(h2))
+    if i == f.size - 1:
+        raise ValueError(
+            f"|H| is largest at f_ref/2 = {f_hi:.4g} Hz "
+            f"({10.0 * np.log10(h2[-1]):.3g} dB): the loop is close to "
+            "oscillating at half the reference frequency (gain margin "
+            f"{mar['gain_margin_db']:.3g} dB), and |H| does not fall "
+            "through -3 dB below that frequency, so there is no "
+            "closed-loop bandwidth to report")
+    if i == 0:
+        raise ValueError(
+            f"the largest |H| in the band is at its low end "
+            f"({f[i]:.4g} Hz): there is no peak inside {f_lo:.3g} to "
+            f"{f_hi:.3g} Hz. Lower f_lo; a loop whose filter has no "
+            "capacitor (type 1) has no peaking")
+    lo, hi = float(np.log(f[i - 1])), float(np.log(f[i + 1]))
+    opt = minimize_scalar(lambda x: -h2_at(x), bounds=(lo, hi),
+                          method="bounded",
+                          options={"xatol": 1e-12 * max(abs(lo), 1.0)})
+    if -float(opt.fun) >= h2[i]:
+        peak2, f_peak = -float(opt.fun), min(float(np.exp(opt.x)), f_hi)
+    else:                                 # the grid point is higher
+        peak2, f_peak = float(h2[i]), float(f[i])
+    below = h2 < 0.5
+    idx = np.flatnonzero(~below[:-1] & below[1:])
+    idx = idx[idx >= i]
+    if idx.size == 0:
+        raise ValueError(
+            "|H| does not fall through -3 dB above its peak between "
+            f"{f[i]:.4g} Hz and f_ref/2 = {f_hi:.4g} Hz: the closed loop "
+            "passes everything up to the Nyquist frequency, so there is "
+            "no closed-loop bandwidth to report")
+    j = int(idx[-1])
+    xa, xb = float(np.log(f[j])), float(np.log(f[j + 1]))
+    x3 = brentq(lambda x: h2_at(x) - 0.5, xa, xb,
+                xtol=4e-16 * max(abs(xa), abs(xb), 1.0),
+                rtol=4 * np.finfo(float).eps, maxiter=200)
+    return {"f_3db_hz": min(float(np.exp(x3)), f_hi),
+            "peaking_db": float(10.0 * np.log10(peak2)),
+            "f_peak_hz": f_peak,
+            "f_crossover_hz": mar["f_crossover_hz"],
+            "phase_margin_deg": mar["phase_margin_deg"],
+            "gain_margin_db": mar["gain_margin_db"]}
+
+
 def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
                                  n_div: float, c_shunt: float,
                                  branches: Sequence[tuple[float, float]] = (),
@@ -408,7 +526,9 @@ def continuous_closed_loop_poles(icp: float, kvco_hz_per_v: float,
 
 
 def pulse_doublet_vector(kvco_hz_per_v: float, c_shunt: float,
-                         branches: Sequence[tuple[float, float]] = ()) -> np.ndarray:
+                         branches: Sequence[tuple[float, float]] = (),
+                         r3: float | None = None,
+                         c3: float | None = None) -> np.ndarray:
     """The second-order pulse-width correction direction, M B.
 
     A pump pulse is a RECTANGLE of charge q = pol Icp tau lasting |tau|
@@ -426,8 +546,19 @@ def pulse_doublet_vector(kvco_hz_per_v: float, c_shunt: float,
     impulse response at time t, the correction decays to the LASTING
     phase error -Kvco pol Icp tau^2 / (2 C_total), independent of
     C_shunt (asserted in the tests).
+
+    r3, c3 : optional R3-C3 section (ohm, F, both finite and > 0), as
+    for `sampled_loop_map` (since 0.9.0).  The oscillator is then
+    driven by the voltage on C3, which a pulse into the pump node does
+    not move at t = 0+: the oscillator row of M B is exactly 0 (no
+    in-pulse ramp), and the lasting phase error is the same
+    -Kvco pol Icp tau^2 / (2 C_total), with C3 counted in C_total.
+    This is the vector `simulate_sampled(order=2)` uses with the
+    section; the tests hold e^{Mt} M B against the impulse response of
+    `third_order_impedance` found from its poles and residues.
     """
-    fm = FilterModes(c_shunt, branches)
+    br, out = filter_network(c_shunt, branches, r3, c3)
+    fm = FilterModes(c_shunt, br, out)
     a, b, c = fm.state_matrices()
     n = fm.n
     M = np.zeros((n + 1, n + 1))
@@ -449,7 +580,7 @@ def simulate_sampled(icp: float, kvco_hz_per_v: float, n_div: float,
     """Fast per-cycle simulation of the charge-pump loop, to 1st or 2nd
     order in the PFD pulse width.
 
-    order=1 is the exact linearised sampled-data map of
+    order=1 is the exact linearized sampled-data map of
     `sampled_loop_map`.  order=2 adds every second-order effect of the
     finite pulse width, computed self-consistently from the map's own
     state (nothing is taken from the edge-level simulator):

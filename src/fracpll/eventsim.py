@@ -14,7 +14,7 @@ simulating the loop EDGE BY EDGE:
   already set is lost (a cycle slip);
 * a charge pump with separate UP and DN currents (mismatch), a
   constant leakage, a pump polarity (negative-Kvco oscillators need
-  the pump inverted), and an optional dead zone modelled as a turn-on
+  the pump inverted), and an optional dead zone modeled as a turn-on
   delay t_deadzone: a pump delivers current only after it has been
   commanded on for t_deadzone, so pulses shorter than that deliver
   nothing.  This dead-zone model is a behavioural choice, stated as
@@ -35,7 +35,7 @@ simulating the loop EDGE BY EDGE:
 
 What it is checked against (see tests/test_eventsim.py): the exact
 charge balance of the periodic steady state (leakage, mismatch, reset
-delay and dead zone together), the exact linearised sampled-data map of
+delay and dead zone together), the exact linearized sampled-data map of
 `fracpll.sampled` cycle by cycle, the averaged model in its own regime,
 the delta-sigma noise formula of `fracpll.mash` through the loop, and
 the exact mean division ratio of a fractional-N lock.
@@ -435,7 +435,7 @@ def simulate_pll(vco: LinearVCO | TuningCurve, n_int: int,
                     f"control voltage {v:.4g} V left the measured tuning "
                     f"range [{lo:.4g}, {hi:.4g}] V at t = "
                     f"{k_ref * T + t:.4g} s; the "
-                    "oscillator is not characterised there")
+                    "oscillator is not characterized there")
         if t_rst_at is not None and t_rst_at <= t:
             do_reset()
         if t_up_start is not None and t_up_start <= t:

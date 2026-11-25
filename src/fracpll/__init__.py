@@ -31,7 +31,15 @@ closed-loop -3 dB bandwidth and peaking (`closed_loop_response`).
 Version 0.8 takes the third-order filter (an R3-C3 section, `r3` and
 `c3`) into the per-cycle model, the edge-by-edge simulator,
 `reference_spurs` and `margin_uncertainty`, and refuses whole-number
-inputs given as fractions instead of cutting them.
+inputs given as fractions instead of cutting them.  Version 0.9 adds
+the closed-loop bandwidth and peaking of the exact per-cycle loop
+(`sampled_closed_loop_response`), the design of the third-order filter
+(`design_loop_filter` with `t3_over_t1` and `c3_over_c1`), the R3-C3
+section in `lock_transient` and `pulse_doublet_vector`, correlated
+inputs in `margin_uncertainty`, files with a decimal comma, and a
+measurement plan for the log-log jitter rule; `stability` now follows
+the loop phase continuously, so a phase past -360 degrees is no longer
+read as a margin.
 """
 
 from .design import design_loop_filter
@@ -47,7 +55,8 @@ from .noise import (NoiseSpec, closed_loop_lines, dbc_to_psd,
                     psd_to_dbc, rms_jitter, synthesizer_psd, white_floor)
 from .pfd import pfd_static_offset
 from .sampled import (continuous_closed_loop_poles, pulse_doublet_vector,
-                      sampled_loop_map, sampled_margins, sampled_open_loop,
+                      sampled_closed_loop_response, sampled_loop_map,
+                      sampled_margins, sampled_open_loop,
                       sampled_stability, simulate_sampled)
 from .plan import averages_for_jitter, jitter_relative_sigma
 from .readers import read_noise_csv, read_tuning_csv
@@ -55,7 +64,7 @@ from .spurs import reference_spurs
 from .tuning import TuningCurve, TuningFamily, fit_linear_vco, fit_tuning
 from .uncertainty import margin_uncertainty
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     "loop_filter_impedance", "second_order_impedance",
@@ -69,6 +78,7 @@ __all__ = [
     "LinearVCO", "SimResult", "simulate_pll", "pfd_static_offset",
     "sampled_loop_map", "sampled_stability",
     "sampled_open_loop", "sampled_margins",
+    "sampled_closed_loop_response",
     "continuous_closed_loop_poles", "simulate_sampled",
     "pulse_doublet_vector",
     "fit_tuning", "fit_linear_vco", "TuningCurve", "TuningFamily",

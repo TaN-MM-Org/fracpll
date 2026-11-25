@@ -43,17 +43,35 @@ Since 0.8.0 the filter may include the R3-C3 section of
 `fracpll.filters.third_order_impedance` (`r3`, `c3`, with relative
 uncertainties `u_r3`, `u_c3`), in both models.
 
-Honest limits: the inputs are taken as uncorrelated; f_ref and N are
-exact.  The answer is only as good as the model behind it
+Since 0.9.0 the inputs may be correlated, for example two capacitors
+from the same reel that are both high or both low, or a pump current
+and a Kvco measured with the same instrument.  `correlations` gives the
+correlation coefficient r_ij (between -1 and +1) of any pair of inputs;
+pairs not given are uncorrelated.  The combined variance is then the
+variance of the sum of the contributions,
+
+    u_c(y)^2 = sum_i sum_j (c_i u_i) r_ij (c_j u_j),
+
+which is the GUM's expression for correlated inputs (JCGM 100:2008,
+5.2.2, eq. (13), with the correlation coefficient of eq. (14)); with
+no correlations it is eq. (10) above.  The Monte Carlo draws then come
+from a multivariate normal distribution with these correlations.  The
+tests check exact cases (Icp and Kvco enter the averaged loop only as
+their product, so r = +1 doubles their combined share and r = -1
+cancels it) and the Monte Carlo spread against the formula.
+
+Honest limits: the inputs are uncorrelated unless `correlations` says
+otherwise; f_ref and N are exact.  The answer is only as good as the model behind it
 (`fracpll.stability` or `fracpll.sampled_margins`), and inherits their
 refusals.
 """
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from ._checks import whole
 from ._network import filter_network
 from .filters import loop_filter_impedance
 from .loop import stability
@@ -98,8 +116,9 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
                        n_mc: int = 0, seed: int | None = None,
                        max_curvature: float = 0.1,
                        r3: float | None = None, c3: float | None = None,
-                       u_r3: float = 0.0, u_c3: float = 0.0
-                       ) -> dict[str, Any]:
+                       u_r3: float = 0.0, u_c3: float = 0.0,
+                       correlations: Mapping[tuple[str, str], float]
+                       | None = None) -> dict[str, Any]:
     """Standard uncertainty of the loop bandwidth and margins.
 
     icp, kvco_hz_per_v, n_div, f_ref_hz, c_shunt, branches : the loop,
@@ -123,6 +142,12 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
     r3, c3 : optional R3-C3 section after the filter (ohm, F, both
         finite and > 0), as in `third_order_impedance`; u_r3, u_c3 :
         their relative standard uncertainties.
+    correlations : optional {(input_a, input_b): r} with the input
+        names below and -1 <= r <= 1, for inputs that are not
+        independent (since 0.9.0); for example {("c_shunt",
+        "branch0_c"): 0.8}.  Pairs not given have r = 0.  The
+        coefficients must form a valid correlation matrix (no negative
+        eigenvalue).
 
     Returns a dict with
         nominal : the model's outputs at the nominal values;
@@ -135,11 +160,16 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
         curvature : {output: largest |y(+) + y(-) - 2 y(0)|/2 over the
             inputs, divided by u_c};
         mc : (only when n_mc > 0) {output: {"mean", "std", "p2.5",
-            "p97.5"}} over the draws.
+            "p97.5"}} over the draws;
+        correlation : (only when correlations is given) the full
+            correlation matrix, its rows and columns in the order of
+            the input names.
     Inputs are named "icp", "kvco", "c_shunt", and "branch0_r",
     "branch0_c", "branch1_r", ... for the resistor and capacitor of
     each branch (counted from 0), then "r3" and "c3" when the R3-C3
-    section is given.
+    section is given.  With correlations, the contributions keep their
+    meaning (c_i u_i) but u^2 is no longer the sum of their squares:
+    it is the double sum in the module docstring.
 
     Refuses (ValueError) when the nominal loop is refused by the model;
     when moving any one input by one standard uncertainty either way
@@ -194,7 +224,7 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
     mct = float(max_curvature)
     if not (np.isfinite(mct) and mct > 0.0):
         raise ValueError("max_curvature must be finite and positive")
-    n_mc = int(n_mc)
+    n_mc = whole(n_mc, "n_mc")      # before 0.9.0, int(): 2.9 ran as 2
     if n_mc < 0 or n_mc == 1:
         raise ValueError(f"n_mc must be 0 (no Monte Carlo) or >= 2, got "
                          f"{n_mc}")
@@ -210,6 +240,8 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
         a_r3, a_c3 = r3 * next(s), c3 * next(s)
         return _evaluate(model, a_icp, a_kv, n_div, f_ref, a_c0, a_br,
                          pol, a_r3, a_c3)
+
+    corr = _correlation_matrix(correlations, names)
 
     ones = np.ones(len(names))
     y0 = run(ones)
@@ -241,8 +273,16 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
         sens[name] = {o: contrib[name][o] / u for o in outs}
         for o in outs:
             curv[o] = max(curv[o], abs(0.5 * (yp[o] + ym[o]) - y0[o]))
-    u_c = {o: float(np.sqrt(sum(contrib[n][o] ** 2 for n in names)))
-           for o in outs}
+    if corr is None:
+        u_c = {o: float(np.sqrt(sum(contrib[n][o] ** 2 for n in names)))
+               for o in outs}
+    else:
+        u_c = {}
+        for o in outs:
+            cu = np.array([contrib[n][o] for n in names])
+            # a valid correlation matrix gives a variance >= 0; clip
+            # the rounding of an exact cancellation (r = -1) at zero
+            u_c[o] = float(np.sqrt(max(float(cu @ corr @ cu), 0.0)))
     curv_rel = {}
     for o in outs:
         if u_c[o] == 0.0:
@@ -260,8 +300,12 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
            "sensitivity": sens, "curvature": curv_rel}
     if n_mc:
         rng = np.random.default_rng(seed)
-        draws = 1.0 + rng.standard_normal((n_mc, len(names))) \
-            * np.array(us)[None, :]
+        z = rng.standard_normal((n_mc, len(names)))
+        if corr is not None:
+            # correlated normal draws: z A^T has covariance A A^T = corr
+            lam, q = np.linalg.eigh(corr)
+            z = z @ (q * np.sqrt(np.clip(lam, 0.0, None))[None, :]).T
+        draws = 1.0 + z * np.array(us)[None, :]
         if np.any(draws <= 0.0):
             raise ValueError("a Monte Carlo draw gave a non-positive "
                              "component value; the uncertainties are "
@@ -288,4 +332,56 @@ def margin_uncertainty(icp: float, kvco_hz_per_v: float, n_div: float,
                          "p2.5": float(np.percentile(v, 2.5)),
                          "p97.5": float(np.percentile(v, 97.5))}
                      for o, v in vals.items()}
+    if corr is not None:
+        out["correlation"] = corr
     return out
+
+
+def _correlation_matrix(correlations, names):
+    """The correlation matrix of the inputs, or None for independent
+    inputs (the code path of 0.8.0, unchanged)."""
+    if correlations is None:
+        return None
+    try:
+        items = list(dict(correlations).items())
+    except (TypeError, ValueError):
+        raise ValueError("correlations must be a mapping {(input_a, "
+                         "input_b): r}") from None
+    if not items:
+        return None
+    index = {n: i for i, n in enumerate(names)}
+    corr = np.eye(len(names))
+    seen = set()
+    for key, r in items:
+        try:
+            a, b = key
+        except (TypeError, ValueError):
+            raise ValueError(f"correlations: the key {key!r} is not a "
+                             "pair of input names") from None
+        for n in (a, b):
+            if n not in index:
+                raise ValueError(
+                    f"correlations: unknown input {n!r}; the inputs of "
+                    f"this loop are {', '.join(names)}")
+        if a == b:
+            raise ValueError(f"correlations: {a!r} is paired with itself "
+                             "(its correlation with itself is 1)")
+        pair = frozenset((a, b))
+        if pair in seen:
+            raise ValueError(f"correlations: the pair ({a!r}, {b!r}) is "
+                             "given twice")
+        seen.add(pair)
+        r = float(r)
+        if not (np.isfinite(r) and -1.0 <= r <= 1.0):
+            raise ValueError(f"correlations: r({a}, {b}) = {r!r} is not "
+                             "between -1 and +1")
+        corr[index[a], index[b]] = corr[index[b], index[a]] = r
+    lam_min = float(np.min(np.linalg.eigvalsh(corr)))
+    if lam_min < -1e-12:
+        raise ValueError(
+            "correlations: these coefficients cannot all hold at once "
+            f"(the correlation matrix has a negative eigenvalue, "
+            f"{lam_min:.3g}); for example, if a and b are strongly "
+            "correlated and b and c too, then a and c cannot be "
+            "strongly anti-correlated")
+    return corr

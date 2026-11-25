@@ -35,6 +35,11 @@ exact static offset (with mismatch, reset delay and dead zone) is
 `fracpll.pfd.pfd_static_offset`; the two agree to first order in
 I_leak/Icp, which the tests check.
 
+Since 0.9.0 `lock_transient` also takes the R3-C3 section of
+`fracpll.filters.third_order_impedance` (`r3`, `c3`), as one more
+series branch of the filter whose capacitor voltage drives the
+oscillator.
+
 Honest limits: this is the AVERAGED model -- per-edge behavior (dead
 zone, cycle-slip granularity, reset overlap) is below its resolution
 (use `fracpll.eventsim` for it), and it says nothing about a loop whose crossover violates the
@@ -48,6 +53,8 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import brentq
 
+from ._checks import whole
+from ._network import filter_network
 from .tuning import TuningCurve
 
 __all__ = ["static_offset", "lock_transient"]
@@ -81,7 +88,8 @@ def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
                    i_leak: float = 0.0, mismatch: float = 0.0,
                    vc0: float | None = None, phi0: float = 0.0,
                    t_end: float | None = None, n_eval: int = 2000,
-                   settle_tol_rad: float = 0.05) -> dict[str, Any]:
+                   settle_tol_rad: float = 0.05, r3: float | None = None,
+                   c3: float | None = None) -> dict[str, Any]:
     """Integrate the averaged loop from a cold start.
 
     curve : a `fracpll.tuning.TuningCurve` (the measured oscillator).
@@ -99,6 +107,12 @@ def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
     n_eval : number of equally spaced output samples over [0, t_end].
     settle_tol_rad : the settling band around the static offset
         (reference radians).
+    r3, c3 : optional R3-C3 section after the filter (ohm, F, both
+        finite and > 0), as in `third_order_impedance` (since 0.9.0).
+        The oscillator is then driven by the voltage on C3, which is
+        what `vc` returns and what vc0 sets; every capacitor starts at
+        vc0.  (With R3 = 0, C3 is in parallel with C1: add it to
+        c_shunt.)
 
     Returns dict(t, phi_e, vc, locked, t_settle, phi_static).
     `locked` requires the phase error to stay within settle_tol_rad of
@@ -142,6 +156,9 @@ def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
     if not (np.isfinite(c_sh) and c_sh > 0.0):
         raise ValueError("c_shunt must be finite and positive")
     br = [(float(r), float(c)) for (r, c) in branches]
+    # the R3-C3 section is one more series branch, and the oscillator
+    # reads its capacitor instead of the pump node
+    br_all, out = filter_network(c_sh, br, r3, c3)
     for r, c in br:
         if not (np.isfinite(r) and r > 0.0):
             raise ValueError("zero-resistance branches: lump the "
@@ -160,15 +177,20 @@ def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
     tol = float(settle_tol_rad)
     if not (np.isfinite(tol) and tol > 0.0):
         raise ValueError("settle_tol_rad must be finite and positive")
-    n_eval = int(n_eval)
+    n_eval = whole(n_eval, "n_eval")
     if n_eval < 2:
         raise ValueError("n_eval must be >= 2")
+
+    br = br_all
+    # the state that drives the oscillator: capacitor `out` of the
+    # network (0 = the pump node) is state 1 + out
+    i_out = 1 + out
 
     # states: [phi_e, v_shunt, v_c(branch capacitors)...]
     def rhs(t, y):
         phi, vsh = y[0], y[1]
         vcap = y[2:]
-        vc = min(max(vsh, v_lo), v_hi)   # rail at the measured range
+        vc = min(max(y[i_out], v_lo), v_hi)   # rail at the measured range
         i = icp * (np.tanh(phi / (2.0 * np.pi)) + mismatch) \
             - float(i_leak)
         # branch currents into the node
@@ -197,7 +219,7 @@ def lock_transient(curve: TuningCurve, n_div: float, f_ref_hz: float,
     if not sol.success:
         raise RuntimeError(f"integration failed: {sol.message}")
     phi = sol.y[0]
-    vc = np.clip(sol.y[1], v_lo, v_hi)
+    vc = np.clip(sol.y[i_out], v_lo, v_hi)
     tail = slice(int(0.8 * phi.size), None)
     locked = bool(np.all(np.abs(phi[tail] - phi_ss) < tol))
     t_settle = None

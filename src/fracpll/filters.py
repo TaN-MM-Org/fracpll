@@ -34,8 +34,9 @@ TRANSIMPEDANCE, control voltage at C3 per pump current,
 found by nodal analysis; the tests hold the code against this
 polynomial, against a nodal-matrix solve and against the R3 -> 0
 limit.  It plugs into the averaged model (`open_loop`, `stability`,
-`synthesizer_psd`); the per-cycle and edge-by-edge models take only
-the shunt-C + R-C family.
+`synthesizer_psd`).  Since 0.8.0 the per-cycle and edge-by-edge
+models take the same section through their `r3` and `c3` inputs, and
+since 0.9.0 so do `lock_transient` and `design_loop_filter`.
 
 Honest limits: these are ideal passive elements.  Element temperature
 or voltage dependence (a varactor C2, say) enters by evaluating the
@@ -137,7 +138,9 @@ def third_order_impedance(w: ArrayLike, c1: float, r2: float, c2: float,
     Use it as `zfilter` of the averaged model, for example
     ``stability(icp, kvco, n, lambda w: third_order_impedance(w, ...),
     f_ref)``.  The per-cycle (`sampled_*`, `simulate_sampled`) and
-    edge-by-edge (`simulate_pll`) models do not take this filter.
+    edge-by-edge (`simulate_pll`) models take the same filter as
+    `c_shunt=c1, branches=[(r2, c2)], r3=r3, c3=c3` (since 0.8.0; the
+    docstring said otherwise until 0.9.0).
     """
     w = _check_w(w)
     for name, v in (("c1", c1), ("c2", c2), ("c3", c3)):
